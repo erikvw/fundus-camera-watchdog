@@ -1,1 +1,0 @@
-# fundus-camera-watchdog
