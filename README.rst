@@ -1,3 +1,5 @@
+|pypi| |actions| |codecov| |downloads| |clinicedc|
+
 Fundus Camera Watchdog
 ======================
 
@@ -233,3 +235,19 @@ SQLite database and list its schema::
     .schema images
 
 Then update the ``db_*`` keys in your config file to match.
+
+.. |pypi| image:: https://img.shields.io/pypi/v/fundus-camera-watchdog.svg
+    :target: https://pypi.python.org/pypi/fundus-camera-watchdog
+
+.. |actions| image:: https://github.com/erikvw/fundus-camera-watchdog/actions/workflows/build.yml/badge.svg
+  :target: https://github.com/erikvw/fundus-camera-watchdog/actions/workflows/build.yml
+
+.. |codecov| image:: https://codecov.io/gh/erikvw/fundus-camera-watchdog/branch/develop/graph/badge.svg
+  :target: https://codecov.io/gh/erikvw/fundus-camera-watchdog
+
+.. |downloads| image:: https://pepy.tech/badge/fundus-camera-watchdog
+   :target: https://pepy.tech/project/fundus-camera-watchdog
+
+.. |clinicedc| image:: https://img.shields.io/badge/framework-Clinic_EDC-green
+   :alt:Made with clinicedc
+   :target: https://github.com/clinicedc
