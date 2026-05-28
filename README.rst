@@ -1,10 +1,9 @@
-Camera folder watcher
-=====================
+Fundus Camera Watchdog
+======================
 
-``camera_watchdog.py`` monitors a folder on the retinopathy camera workstation
-for new subject output and uploads the files to the ``edc-retinopathy`` API automatically.
+``camera_watchdog.py`` monitors a folder on the fundus camera workstation and uploads files to a CLINICEDC project using the ``edc-retinopathy`` API.
 
-It is designed to run continuously on a **Windows** machine alongside the camera software. When the camera finishes an examination and writes files to disk, the watcher detects them, resolves the subject against the EDC server, uploads each file, and moves the completed folder to an archive.
+It is designed to run on the camera's workstation. When the camera finishes an examination and writes files to disk, the watchdog detects them, resolves the subject against the CLINICEDC server, uploads each file, and moves the completed folder to an archive folder.
 
 Prerequisites
 -------------
@@ -41,7 +40,7 @@ The camera creates one subfolder per subject, named with the subject identifier.
         105-10-0001-2\
             ...
 
-Because filenames are random UUIDs, the watcher queries the camera's SQLite database to determine which file belongs to which eye.
+Because filenames are random UUIDs, the watchdog queries the camera's SQLite database to determine which file belongs to which eye.
 
 Processing is triggered once a subject folder contains the expected number
 of files:
@@ -103,7 +102,7 @@ Optional keys
 ``report_type``
     How the camera writes its analysis reports. ``combined`` (default) means
     a single HTML file covers both eyes; ``per_eye`` means one HTML per eye.
-    This controls how many files the watcher expects before triggering an
+    This controls how many files the watchdog expects before triggering an
     upload (3 for combined, 4 for per_eye).
 
 ``log_level``
@@ -112,7 +111,7 @@ Optional keys
 Database column mapping
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-These keys tell the watcher which tables and columns to query in the
+These keys tell the watchdog which tables and columns to query in the
 camera's SQLite database. Adjust them to match your camera vendor's
 actual schema.
 
@@ -138,7 +137,7 @@ actual schema.
 | ``db_image_eye``            | Column for eye laterality                | ``eye``                  |
 +-----------------------------+------------------------------------------+--------------------------+
 
-The watcher normalises eye values automatically.  All of the following
+The watchdog normalises eye values automatically.  All of the following
 are recognised:
 
 - **Left eye**: ``L``, ``LE``, ``OS``, ``LEFT``
@@ -173,7 +172,7 @@ Stop with ``Ctrl+C``.
 What it does
 ------------
 
-The watcher runs continuously and performs the following for each
+The watchdog runs continuously and performs the following for each
 subject:
 
 1. **Detect** — watches for new files in subject subfolders using
@@ -216,7 +215,7 @@ Error handling
   validation error, upload failure), the subject is marked as
   unprocessed and will be retried on the next 60-second sweep.
 
-- **Startup scan** — on (re)start the watcher scans all existing
+- **Startup scan** — on (re)start the watchdog scans all existing
   subject folders, so a restart after a crash picks up where it left off.
 
 - **Thread safety** — file detection and upload run on separate
