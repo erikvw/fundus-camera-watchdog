@@ -6,6 +6,7 @@ readme = "README.rst"
 requires-python = '>=3.12,<3.15'
 dependencies = [
     "requests>=2.34.2",
+    "tzdata>=2026.2",
     "watchdog>=6.0.0",
 ]
 

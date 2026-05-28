@@ -827,7 +827,7 @@ class CameraWatchDog(FileSystemEventHandler):
     # -- post-processing -----------------------------------------------
 
     def _move_to_processed(self, sf: SubjectFiles) -> None:
-        ts = datetime.now(tz=ZoneInfo("utc")).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(tz=ZoneInfo("UTC")).strftime("%Y%m%d_%H%M%S")
         dest = self.processed_dir / f"{sf.subject_identifier}_{ts}"
         try:
             shutil.move(str(sf.directory), str(dest))
