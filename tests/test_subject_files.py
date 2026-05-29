@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import SubjectFiles
+from fundus_camera_watchdog.main import SubjectFiles
 
 from .constants import (
     COMBINED_HTML_FILE_COUNT,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fundus_camera_watchdog.camera_watchdog import _load_config, _resolve
+from fundus_camera_watchdog.main import _load_config, _resolve
 
 # ---------------------------------------------------------------------------
 # _load_config

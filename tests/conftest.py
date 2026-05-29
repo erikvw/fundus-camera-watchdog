@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import (
+from fundus_camera_watchdog.main import (
     CameraDB,
     CameraWatchDog,
     DBColumnMap,

@@ -3,7 +3,7 @@
 Fundus Camera Watchdog
 ======================
 
-``camera_watchdog.py`` monitors a folder on the fundus camera workstation and uploads files to a CLINICEDC project using the ``edc-retinopathy`` API.
+``fundus-camera-watchdog`` monitors a folder on the fundus camera workstation and uploads files to a CLINICEDC project using the ``edc-retinopathy`` API.
 
 It is designed to run on the camera's workstation. When the camera finishes an examination and writes files to disk, the watchdog detects them, resolves the subject against the CLINICEDC server, uploads each file, and moves the completed folder to an archive folder.
 
@@ -290,6 +290,81 @@ SQLite database and list its schema::
     .schema images
 
 Then update the ``db_*`` keys in your config file to match.
+
+Creating a test watch directory
+-------------------------------
+
+To try the watchdog without a real camera, create a sample watch directory
+with dummy files that pass the API's content validation.
+
+1. Create the folder structure::
+
+    mkdir -p /tmp/watchdog_test/105-10-0001-2
+    cd /tmp/watchdog_test
+
+2. Generate a sample config::
+
+    uvx fundus-camera-watchdog --create-config
+
+3. Create two dummy JPEG images (1x1 pixel)::
+
+    uv run --with pillow python -c "
+    from PIL import Image
+    import uuid
+    for _ in range(2):
+        img = Image.new('RGB', (1, 1), color='red')
+        img.save(f'105-10-0001-2/{uuid.uuid4().hex}.jpg', 'JPEG')
+    "
+
+4. Create a dummy HTML report::
+
+    uv run python -c "
+    import uuid
+    from pathlib import Path
+    name = f'105-10-0001-2/{uuid.uuid4().hex}.html'
+    Path(name).write_text('<!doctype html><html><body>Report</body></html>')
+    "
+
+5. Create the camera SQLite database with matching file entries::
+
+    uv run python -c "
+    import sqlite3, os
+    conn = sqlite3.connect('camera.db')
+    conn.execute('''CREATE TABLE patients (
+        subject_identifier TEXT PRIMARY KEY,
+        initials TEXT, sex TEXT, age INTEGER)''')
+    conn.execute('INSERT INTO patients VALUES (?, ?, ?, ?)',
+        ('105-10-0001-2', 'JD', 'M', 35))
+    conn.execute('''CREATE TABLE images (
+        subject_identifier TEXT, filename TEXT, eye TEXT)''')
+    files = sorted(os.listdir('105-10-0001-2'))
+    jpgs = [f for f in files if f.endswith('.jpg')]
+    htmls = [f for f in files if f.endswith('.html')]
+    rows = []
+    for jpg, eye in zip(jpgs, ['L', 'R']):
+        rows.append(('105-10-0001-2', jpg, eye))
+    for html, eye in zip(htmls, ['L', 'R']):
+        rows.append(('105-10-0001-2', html, eye))
+    conn.executemany('INSERT INTO images VALUES (?, ?, ?)', rows)
+    conn.commit()
+    conn.close()
+    print(f'Created camera.db with {len(rows)} file entries')
+    "
+
+6. Edit ``fundus_camera_watchdog.json`` to set ``db_path``, ``api_url``,
+   and token, then start the watchdog::
+
+    uvx fundus-camera-watchdog
+
+The resulting folder should look like::
+
+    /tmp/watchdog_test/
+        fundus_camera_watchdog.json
+        camera.db
+        105-10-0001-2/
+            a1b2c3d4...jpg
+            e5f6a7b8...jpg
+            c9d0e1f2...html
 
 .. |pypi| image:: https://img.shields.io/pypi/v/fundus-camera-watchdog.svg
     :target: https://pypi.python.org/pypi/fundus-camera-watchdog

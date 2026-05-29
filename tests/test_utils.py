@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import (
+from fundus_camera_watchdog.main import (
     REPORT_TYPE_COMBINED,
     REPORT_TYPE_PER_EYE,
     LateralityRequiredForImagesError,
