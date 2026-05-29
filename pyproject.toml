@@ -13,6 +13,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/erikvw/fundus-camera-watchdog"
 
+[project.scripts]
+fundus-camera-watchdog = "fundus_camera_watchdog.camera_watchdog:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
