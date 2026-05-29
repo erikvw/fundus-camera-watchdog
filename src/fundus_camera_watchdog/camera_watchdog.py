@@ -99,6 +99,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -125,6 +126,8 @@ STATUS_CODE_CREATED = 201
 REPORT_TYPE_PER_EYE = "per_eye"
 REPORT_TYPE_COMBINED = "combined"
 VALID_REPORT_TYPES = frozenset({REPORT_TYPE_PER_EYE, REPORT_TYPE_COMBINED})
+DEFAULT_CONFIG_FILENAME = "fundus_camera_watchdog.json"
+ENV_TOKEN = "FUNDUS_CAMERA_WATCHDOG_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Expected file counts per subject folder
@@ -865,6 +868,35 @@ _CONFIG_KEYS_DB = (
 )
 
 
+def _create_sample_config(watch_dir: Path) -> Path:
+    """Write a sample JSON config file with defaults into *watch_dir*.
+
+    Returns the path to the created file.
+    """
+    col_defaults = DBColumnMap()
+    sample: dict[str, str] = {
+        "watch_dir": str(watch_dir),
+        "db_path": str(watch_dir / "camera.db"),
+        "api_url": "https://edc.example.com",
+        "device_id": "",
+        "site_id": "",
+        "log_level": "INFO",
+        "report_type": REPORT_TYPE_COMBINED,
+        "db_patient_table": col_defaults.patient_table,
+        "db_patient_subject_id": col_defaults.patient_subject_id,
+        "db_patient_initials": col_defaults.patient_initials,
+        "db_patient_sex": col_defaults.patient_sex,
+        "db_patient_age": col_defaults.patient_age,
+        "db_image_table": col_defaults.image_table,
+        "db_image_subject_id": col_defaults.image_subject_id,
+        "db_image_filename": col_defaults.image_filename,
+        "db_image_eye": col_defaults.image_eye,
+    }
+    dest = watch_dir / DEFAULT_CONFIG_FILENAME
+    dest.write_text(json.dumps(sample, indent=4) + "\n", encoding="utf-8")
+    return dest
+
+
 def _load_config(path: Path) -> dict:
     """Load a JSON config file."""
     text = path.read_text(encoding="utf-8")
@@ -884,9 +916,10 @@ def _resolve(
 
 
 def main() -> None:  # noqa: PLR0915
-    # ---- first pass: extract --config so we can set defaults ----------
+    # ---- first pass: extract --config/--watch-dir so we can set defaults -
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", type=Path, default=None)
+    pre.add_argument("--watch-dir", default=None)
     pre_args, _ = pre.parse_known_args()
 
     config: dict = {}
@@ -895,6 +928,12 @@ def main() -> None:  # noqa: PLR0915
             sys.stdout.write(f"Config file not found: {pre_args.config}\n")
             sys.exit(1)
         config = _load_config(pre_args.config)
+    else:
+        # Auto-discover config in watch-dir (or cwd if --watch-dir omitted).
+        watch_base = Path(pre_args.watch_dir or ".").resolve()
+        auto_config = watch_base / DEFAULT_CONFIG_FILENAME
+        if auto_config.is_file():
+            config = _load_config(auto_config)
 
     # ---- main parser --------------------------------------------------
     col_defaults = DBColumnMap()
@@ -938,6 +977,16 @@ def main() -> None:  # noqa: PLR0915
     parser.add_argument("--token", default=None, help="DRF authentication token.")
     parser.add_argument("--device-id", default=None, help="Camera device identifier.")
     parser.add_argument("--site-id", default=None, help="Study site identifier.")
+    parser.add_argument(
+        "--create-config",
+        action="store_true",
+        default=False,
+        help=(
+            "Write a sample camera_config.json with defaults into the "
+            "--watch-dir folder and exit. Only --watch-dir may be used "
+            "with this flag."
+        ),
+    )
     parser.add_argument(
         "--log-level",
         default=None,
@@ -1015,6 +1064,40 @@ def main() -> None:  # noqa: PLR0915
 
     args = parser.parse_args()
 
+    # ---- --create-config mode -----------------------------------------
+    if args.create_config:
+        # Reject any other flags that were explicitly provided.
+        disallowed = {
+            "--config": args.config,
+            "--db-path": args.db_path,
+            "--api-url": args.api_url,
+            "--token": args.token,
+            "--device-id": args.device_id,
+            "--site-id": args.site_id,
+            "--log-level": args.log_level,
+            "--report-type": args.report_type,
+            "--db-patient-table": args.db_patient_table,
+            "--db-patient-subject-id": args.db_patient_subject_id,
+            "--db-patient-initials": args.db_patient_initials,
+            "--db-patient-sex": args.db_patient_sex,
+            "--db-patient-age": args.db_patient_age,
+            "--db-image-table": args.db_image_table,
+            "--db-image-subject-id": args.db_image_subject_id,
+            "--db-image-filename": args.db_image_filename,
+            "--db-image-eye": args.db_image_eye,
+        }
+        extra = [flag for flag, val in disallowed.items() if val is not None]
+        if extra:
+            parser.error(
+                f"--create-config only accepts --watch-dir. "
+                f"Remove: {', '.join(extra)}."
+            )
+        watch_dir = Path(args.watch_dir or ".").resolve()
+        watch_dir.mkdir(parents=True, exist_ok=True)
+        dest = _create_sample_config(watch_dir)
+        sys.stdout.write(f"Sample config written to {dest}\n")
+        sys.exit(0)
+
     # ---- merge: CLI > config > built-in defaults ----------------------
     log_level = _resolve(args.log_level, config, "log_level", "INFO")
     logging.basicConfig(
@@ -1023,10 +1106,10 @@ def main() -> None:  # noqa: PLR0915
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    watch_dir_raw = _resolve(args.watch_dir, config, "watch_dir")
+    watch_dir_raw = _resolve(args.watch_dir, config, "watch_dir", ".")
     db_path_raw = _resolve(args.db_path, config, "db_path")
     api_url = _resolve(args.api_url, config, "api_url")
-    token = _resolve(args.token, config, "token")
+    token = _resolve(args.token, config, "token") or os.environ.get(ENV_TOKEN, "")
 
     missing = [
         name
@@ -1041,7 +1124,8 @@ def main() -> None:  # noqa: PLR0915
     if missing:
         parser.error(
             f"Missing required settings: {', '.join(missing)}. "
-            "Provide via CLI flags or --config JSON file.",
+            f"Provide via CLI flags, --config JSON file"
+            f", or {ENV_TOKEN} env var (token only).",
         )
 
     watch_dir = Path(watch_dir_raw).resolve()

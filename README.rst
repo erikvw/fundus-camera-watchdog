@@ -50,16 +50,61 @@ of files:
 - **Combined** (default): at least **2 JPEG** and **1 HTML** file (3 files total).
 - **Per-eye**: at least **2 JPEG** and **2 HTML** files (4 files total).
 
+Quick start
+-----------
+
+1. Generate a sample config in the camera output folder::
+
+    cd C:\RetCamOutput
+    uvx fundus-camera-watchdog --create-config
+
+   This creates ``fundus_camera_watchdog.json`` in the current directory
+   with sensible defaults. If the camera output folder is elsewhere, pass
+   ``--watch-dir``::
+
+    uvx fundus-camera-watchdog --create-config --watch-dir C:\RetCamOutput
+
+2. Edit the generated config to fill in ``db_path``, ``api_url``,
+   ``device_id``, etc.
+
+3. Set the API token as an environment variable (recommended — keeps the
+   token out of the config file)::
+
+    REM Windows (persists across reboots)
+    setx FUNDUS_CAMERA_WATCHDOG_TOKEN "YOUR_DRF_TOKEN"
+
+4. Start the watchdog::
+
+    cd C:\RetCamOutput
+    uvx fundus-camera-watchdog
+
 Configuration
 -------------
 
-All settings live in a single JSON file. Create ``camera_config.json``::
+Settings are resolved in the following order (highest priority first):
+
+1. CLI flags (e.g. ``--api-url``)
+2. JSON config file
+3. ``FUNDUS_CAMERA_WATCHDOG_TOKEN`` environment variable (token only)
+4. Built-in defaults
+
+Config file discovery
+~~~~~~~~~~~~~~~~~~~~~
+
+If ``--config`` is not provided, the watchdog looks for
+``fundus_camera_watchdog.json`` in the watch directory (or the current
+directory if ``--watch-dir`` is also omitted). If found, it is loaded
+automatically. Use ``--create-config`` to generate a sample config.
+
+If ``--watch-dir`` is not provided and there is no ``watch_dir`` entry in the
+config file, the watchdog defaults to the current directory.
+
+Example ``fundus_camera_watchdog.json``::
 
     {
         "watch_dir": "C:\\RetCamOutput",
         "db_path": "C:\\RetCamOutput\\camera.db",
         "api_url": "https://edc.example.com",
-        "token": "YOUR_DRF_TOKEN",
         "device_id": "RET-CAM-001",
         "site_id": "40",
 
@@ -77,11 +122,12 @@ All settings live in a single JSON file. Create ``camera_config.json``::
         "report_type": "combined"
     }
 
-Required keys
-~~~~~~~~~~~~~
+Required settings
+~~~~~~~~~~~~~~~~~
 
 ``watch_dir``
-    Folder the camera writes subject subfolders to.
+    Folder the camera writes subject subfolders to. Defaults to the current
+    directory if not provided.
 
 ``db_path``
     Path to the camera's SQLite database.
@@ -90,10 +136,14 @@ Required keys
     Base URL of the EDC server (e.g. ``https://edc.example.com``).
 
 ``token``
-    DRF authentication token for the camera user.
+    DRF authentication token for the camera user. Can be provided via:
 
-Optional keys
-~~~~~~~~~~~~~
+    - ``--token`` CLI flag
+    - ``token`` key in the config file
+    - ``FUNDUS_CAMERA_WATCHDOG_TOKEN`` environment variable (recommended)
+
+Optional settings
+~~~~~~~~~~~~~~~~~
 
 ``device_id``
     Identifier for this camera (sent to the server with each session).
@@ -148,17 +198,22 @@ are recognised:
 Usage
 -----
 
-With a config file (recommended)::
+Run from the camera output folder (auto-discovers ``fundus_camera_watchdog.json``)::
 
-    uv run camera_watchdog.py --config camera_config.json
+    cd C:\RetCamOutput
+    uvx fundus-camera-watchdog
+
+With an explicit config file::
+
+    uvx fundus-camera-watchdog --config C:\path\to\fundus_camera_watchdog.json
 
 CLI flags override any value from the config file::
 
-    uv run camera_watchdog.py --config camera_config.json --log-level DEBUG --report-type per_eye
+    uvx fundus-camera-watchdog --log-level DEBUG --report-type per_eye
 
 Without a config file (all flags on the command line)::
 
-    uv run camera_watchdog.py ^
+    uvx fundus-camera-watchdog ^
         --watch-dir C:\RetCamOutput ^
         --db-path C:\RetCamOutput\camera.db ^
         --api-url https://edc.example.com ^
