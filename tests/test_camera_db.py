@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import CameraDB, DBColumnMap
+from fundus_camera_watchdog.main import CameraDB, DBColumnMap
 
 from .conftest import create_test_db
 from .constants import SUBJECT_IDENTIFIER

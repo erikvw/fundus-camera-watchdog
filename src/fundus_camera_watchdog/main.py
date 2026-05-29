@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -950,6 +951,11 @@ def main() -> None:  # noqa: PLR0915
             "          <uuid>.html             left or right eye report\n"
             "          <uuid>.html             left or right eye report\n"
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('fundus-camera-watchdog')}",
     )
     parser.add_argument(
         "--config",

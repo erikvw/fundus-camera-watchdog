@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import DBColumnMap, InvalidDBColumnError
+from fundus_camera_watchdog.main import DBColumnMap, InvalidDBColumnError
 
 
 class TestDBColumnMapDefaults:

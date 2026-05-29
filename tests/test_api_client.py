@@ -6,7 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from fundus_camera_watchdog.camera_watchdog import RetinopathyApiClient
+from fundus_camera_watchdog.main import RetinopathyApiClient
 
 from .conftest import MockHandler
 from .constants import SUBJECT_IDENTIFIER
