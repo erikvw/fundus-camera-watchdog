@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sqlite3
 import tempfile
 import threading
 from collections.abc import Generator
@@ -15,9 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from fundus_camera_watchdog.main import (
-    CameraDB,
     CameraWatchDog,
-    DBColumnMap,
     RetinopathyApiClient,
 )
 
@@ -40,72 +37,6 @@ def watch_dirs(tmp_path_cleanup: Path) -> tuple[Path, Path]:
     processed = tmp_path_cleanup / "processed"
     processed.mkdir()
     return tmp_path_cleanup, processed
-
-
-# ---------------------------------------------------------------------------
-# Camera DB fixtures
-# ---------------------------------------------------------------------------
-
-
-def create_test_db(path: Path, columns: DBColumnMap | None = None) -> None:
-    """Create a camera-like SQLite DB with test data."""
-    c = columns or DBColumnMap()
-    conn = sqlite3.connect(str(path))
-    conn.execute(
-        f"CREATE TABLE {c.patient_table} ("
-        f"  {c.patient_subject_id} TEXT PRIMARY KEY,"
-        f"  {c.patient_initials} TEXT,"
-        f"  {c.patient_sex} TEXT,"
-        f"  {c.patient_age} INTEGER"
-        f")",
-    )
-    conn.execute(
-        f"INSERT INTO {c.patient_table} VALUES (?, ?, ?, ?)",
-        ("105-10-0001-2", "JD", "M", 35),
-    )
-    conn.execute(
-        f"INSERT INTO {c.patient_table} VALUES (?, ?, ?, ?)",
-        ("105-10-0002-3", "AB", "F", 42),
-    )
-    conn.execute(
-        f"CREATE TABLE {c.image_table} ("
-        f"  {c.image_subject_id} TEXT,"
-        f"  {c.image_filename} TEXT,"
-        f"  {c.image_eye} TEXT"
-        f")",
-    )
-    rows = [
-        ("105-10-0001-2", "aaa.jpg", "L"),
-        ("105-10-0001-2", "bbb.jpg", "R"),
-        ("105-10-0001-2", "ccc.html", "L"),
-        ("105-10-0001-2", "ddd.html", "R"),
-        ("105-10-0002-3", "eee.jpg", "OS"),
-        ("105-10-0002-3", "fff.jpg", "OD"),
-        ("105-10-0002-3", "ggg.html", "LEFT"),
-        ("105-10-0002-3", "hhh.html", "RIGHT"),
-    ]
-    conn.executemany(
-        f"INSERT INTO {c.image_table} VALUES (?, ?, ?)",
-        rows,
-    )
-    conn.commit()
-    conn.close()
-
-
-@pytest.fixture()
-def camera_db_path() -> Generator[Path, None, None]:
-    """Create a temporary SQLite DB with default columns and yield its path."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = Path(tmp.name)
-    create_test_db(db_path)
-    yield db_path
-    db_path.unlink(missing_ok=True)
-
-
-@pytest.fixture()
-def camera_db(camera_db_path: Path) -> CameraDB:
-    """Return a CameraDB instance with default columns."""
-    return CameraDB(camera_db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +113,11 @@ def api_client(mock_server: str) -> Generator[RetinopathyApiClient, None, None]:
 
 @pytest.fixture()
 def watcher(watch_dirs: tuple[Path, Path]) -> CameraWatchDog:
-    """Return a CameraWatchDog with mocked api and camera_db."""
+    """Return a CameraWatchDog with mocked api."""
 
     watch_dir, processed = watch_dirs
     return CameraWatchDog(
         api=MagicMock(spec=RetinopathyApiClient),
-        camera_db=MagicMock(spec=CameraDB),
         watch_dir=watch_dir,
         processed_dir=processed,
     )
