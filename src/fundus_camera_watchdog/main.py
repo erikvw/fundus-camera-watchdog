@@ -9,6 +9,8 @@ The camera organises output into one subfolder per subject::
         105-10-0989-3/
             a1b2c3d4.jpg        <- left or right eye (determined by DB)
             e5f6a7b8.jpg        <- left or right eye (determined by DB)
+            a1b2c3d4.dcm        <- left or right DICOM (determined by DB)
+            e5f6a7b8.dcm        <- left or right DICOM (determined by DB)
             c9d0e1f2.html       <- left or right eye report
             f3a4b5c6.html       <- left or right eye report
         105-10-0001-2/
@@ -103,11 +105,9 @@ import logging
 import os
 import re
 import shutil
-import sqlite3
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -156,9 +156,21 @@ EYE_RIGHT_VALUES = frozenset({"R", "OD", "RIGHT", "RE"})
 # ===================================================================
 
 
+class InvalidSubjectFolderPatternError(Exception):
+    def __init__(self, pattern: str, reason: str) -> None:
+        super().__init__(
+            f"Invalid subject_folder_pattern {pattern!r}: {reason}"
+        )
+
+
 class LateralityRequiredForImagesError(Exception):
     def __init__(self) -> None:
         super().__init__("Eye laterality is required for image files.")
+
+
+class LateralityRequiredForDicomsError(Exception):
+    def __init__(self) -> None:
+        super().__init__("Eye laterality is required for DICOM files.")
 
 
 class LateralityRequiredForReportsError(Exception):
@@ -171,9 +183,86 @@ class UnhandledFileExtensionError(Exception):
         super().__init__(f"Unexpected extension. Got {extension}.")
 
 
-class InvalidDBColumnError(Exception):
-    def __init__(self, value: str, label: str) -> None:
-        super().__init__(f"Invalid SQL identifier for {label}: {value!r}")
+DEFAULT_SUBJECT_FOLDER_PATTERN = r"^(?P<subject_identifier>.+)$"
+
+
+def compile_subject_folder_pattern(pattern: str) -> re.Pattern:
+    """Compile and validate a subject folder regex pattern.
+
+    The pattern must contain a named group ``subject_identifier``
+    (or exactly one unnamed group).  When no group is present the
+    entire match is used as the subject identifier.
+    """
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise InvalidSubjectFolderPatternError(pattern, str(exc)) from exc
+    return compiled
+
+
+def extract_subject_identifier(
+    folder_name: str,
+    pattern: re.Pattern,
+) -> str | None:
+    """Return the subject_identifier from *folder_name*, or None if no match.
+
+    Tries (in order):
+    1. Named group ``subject_identifier``
+    2. First unnamed capture group
+    3. The entire match
+    """
+    m = pattern.match(folder_name)
+    if not m:
+        return None
+    try:
+        return m.group("subject_identifier")
+    except IndexError:
+        pass
+    if m.lastindex:
+        return m.group(1)
+    return m.group(0)
+
+
+DEFAULT_FILENAME_EYE_PATTERN = r"(?P<eye>OD|OS)"
+
+
+def compile_filename_eye_pattern(pattern: str) -> re.Pattern:
+    """Compile and validate a filename eye-laterality regex pattern."""
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise InvalidSubjectFolderPatternError(pattern, str(exc)) from exc
+
+
+def normalize_eye(raw: str) -> str | None:
+    """Map a raw eye value (e.g. OD, OS, L, R) to 'left' or 'right'."""
+    val = raw.strip().upper()
+    if val in EYE_LEFT_VALUES:
+        return "left"
+    if val in EYE_RIGHT_VALUES:
+        return "right"
+    logger.warning("Unknown eye value: %r", raw)
+    return None
+
+
+def extract_eye_from_filename(
+    filename: str,
+    pattern: re.Pattern,
+) -> str | None:
+    """Return 'left' or 'right' from *filename*, or None if no match.
+
+    Searches for a named group ``eye`` first, then first capture group,
+    then the full match.  The raw value is normalized via
+    :func:`normalize_eye`.
+    """
+    m = pattern.search(filename)
+    if not m:
+        return None
+    try:
+        raw = m.group("eye")
+    except IndexError:
+        raw = m.group(1) if m.lastindex else m.group(0)
+    return normalize_eye(raw)
 
 
 def sha256_file(path: Path) -> str:
@@ -213,6 +302,9 @@ def determine_api_file_type(
 
     For images, returns ``left`` or ``right`` (eye is required).
 
+    For DICOM files, returns ``left_dicom`` or ``right_dicom``
+    (eye is required).
+
     For reports (HTML/HTM), behaviour depends on *report_type*:
 
     * ``per_eye`` — returns ``left_report`` or ``right_report``
@@ -224,6 +316,10 @@ def determine_api_file_type(
         if not eye:
             raise LateralityRequiredForImagesError()
         return eye  # "left" or "right"
+    if ext == "dcm":
+        if not eye:
+            raise LateralityRequiredForDicomsError()
+        return f"{eye}_dicom"  # "left_dicom" or "right_dicom"
     if ext in ("html", "htm"):
         if report_type == REPORT_TYPE_COMBINED:
             return "report"
@@ -239,157 +335,11 @@ def mime_for_file(path: Path) -> str:
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".png": "image/png",
+        ".dcm": "application/dicom",
         ".html": "text/html",
         ".htm": "text/html",
         ".pdf": "application/pdf",
     }.get(ext, "application/octet-stream")
-
-
-# ===================================================================
-# Camera SQLite database — column mapping
-# ===================================================================
-
-_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _validate_sql_identifier(value: str, label: str) -> str:
-    if not _SQL_IDENTIFIER_RE.match(value):
-        raise InvalidDBColumnError(value, label)
-    return value
-
-
-@dataclass(frozen=True)
-class DBColumnMap:
-    """Maps logical field names to actual SQLite table/column names.
-
-    Every field has a placeholder default.  Pass the real names from
-    the camera's schema via CLI flags (``--db-*``) or by constructing
-    this dataclass directly.
-    """
-
-    # -- patients / demographics table --
-    patient_table: str = "patients"
-    patient_subject_id: str = "subject_identifier"
-    patient_initials: str = "initials"
-    patient_sex: str = "sex"
-    patient_age: str = "age"
-
-    # -- images / file-mapping table --
-    image_table: str = "images"
-    image_subject_id: str = "subject_identifier"
-    image_filename: str = "filename"
-    image_eye: str = "eye"
-
-    def __post_init__(self) -> None:
-        for field in self.__dataclass_fields__:
-            _validate_sql_identifier(getattr(self, field), field)
-
-
-# ===================================================================
-# Camera SQLite database
-# ===================================================================
-
-
-class CameraDB:
-    """Read-only interface to the camera's SQLite database.
-
-    All table and column names are supplied via :class:`DBColumnMap`,
-    so no source edits are needed when the camera schema is discovered.
-    """
-
-    def __init__(self, db_path: Path, columns: DBColumnMap | None = None) -> None:
-        self.db_path = db_path
-        self.columns = columns or DBColumnMap()
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    # -- demographics --------------------------------------------------
-
-    def get_demographics(self, subject_identifier: str) -> dict | None:
-        """Return ``{"initials": ..., "sex": ..., "age": ...}`` or ``None``."""
-        c = self.columns
-        sql = (
-            f"SELECT {c.patient_initials}, {c.patient_sex}, {c.patient_age}"
-            f"  FROM {c.patient_table}"
-            f" WHERE {c.patient_subject_id} = ?"
-            f" LIMIT 1"
-        )
-        conn = self._connect()
-        try:
-            row = conn.execute(sql, (subject_identifier,)).fetchone()
-            if row:
-                return {
-                    "initials": row[c.patient_initials] or "",
-                    "sex": row[c.patient_sex] or "",
-                    "age": row[c.patient_age],
-                }
-        finally:
-            conn.close()
-        return None
-
-    # -- eye laterality ------------------------------------------------
-
-    def get_eye_for_file(self, subject_identifier: str, filename: str) -> str | None:
-        """Return ``'left'`` or ``'right'`` for *filename*, or ``None``."""
-        c = self.columns
-        sql = (
-            f"SELECT {c.image_eye}"
-            f"  FROM {c.image_table}"
-            f" WHERE {c.image_subject_id} = ?"
-            f"   AND {c.image_filename} = ?"
-            f" LIMIT 1"
-        )
-        conn = self._connect()
-        try:
-            row = conn.execute(sql, (subject_identifier, filename)).fetchone()
-            if row:
-                return self._normalise_eye(row[c.image_eye])
-        finally:
-            conn.close()
-        return None
-
-    def get_file_map(
-        self,
-        subject_identifier: str,
-        filenames: list[str],
-    ) -> dict[str, str]:
-        """Batch lookup: ``{filename: 'left'|'right'}`` for every file."""
-        if not filenames:
-            return {}
-        c = self.columns
-        placeholders = ",".join("?" * len(filenames))
-        sql = (
-            f"SELECT {c.image_filename}, {c.image_eye}"
-            f"  FROM {c.image_table}"
-            f" WHERE {c.image_subject_id} = ?"
-            f"   AND {c.image_filename} IN ({placeholders})"
-        )
-        params = [subject_identifier, *filenames]
-        result: dict[str, str] = {}
-        conn = self._connect()
-        try:
-            for row in conn.execute(sql, params):
-                eye = self._normalise_eye(row[c.image_eye])
-                if eye:
-                    result[row[c.image_filename]] = eye
-        finally:
-            conn.close()
-        return result
-
-    @staticmethod
-    def _normalise_eye(raw: str | None) -> str | None:
-        if not raw:
-            return None
-        val = raw.strip().upper()
-        if val in EYE_LEFT_VALUES:
-            return "left"
-        if val in EYE_RIGHT_VALUES:
-            return "right"
-        logger.warning("Unknown eye value: %r", raw)
-        return None
 
 
 # ===================================================================
@@ -417,31 +367,21 @@ class RetinopathyApiClient:
         r = self._get(f"{self.base_url}/ping/", label="ping")
         return r is not None and r.status_code == STATUS_CODE_OK
 
-    def resolve(
-        self,
-        subject_identifier: str,
-        initials: str,
-        sex: str,
-        age: int | None = None,
-    ) -> dict | None:
-        payload: dict = {
-            "subject_identifier": subject_identifier,
-            "initials": initials,
-            "sex": sex,
-        }
-        if age is not None:
-            payload["age"] = age
+    def resolve(self, subject_identifier: str) -> dict | None:
+        """Confirm a CameraSession exists for *subject_identifier*.
+
+        Returns the response dict on success, or None on failure.
+        """
+        payload: dict = {"subject_identifier": subject_identifier}
         if self.device_id:
             payload["device_id"] = self.device_id
-        if self.site_id:
-            payload["site_id"] = self.site_id
 
         r = self._post_json(
             f"{self.base_url}/resolve/",
             payload,
             label=f"resolve({subject_identifier})",
         )
-        if r is not None and r.status_code in (STATUS_CODE_OK, STATUS_CODE_CREATED):
+        if r is not None and r.status_code == STATUS_CODE_OK:
             return r.json()
         if r is not None:
             logger.error(
@@ -457,13 +397,10 @@ class RetinopathyApiClient:
         subject_identifier: str,
         file_type: str,
         file_path: Path,
-        session_id: str,
     ) -> dict | None:
         checksum = sha256_file(file_path)
         capture_dt = datetime.now(UTC).isoformat()
-        url = (
-            f"{self.base_url}/{subject_identifier}/{file_type}/?session_id={session_id}"
-        )
+        url = f"{self.base_url}/{subject_identifier}/{file_type}/"
         file_bytes = file_path.read_bytes()
         mime = mime_for_file(file_path)
 
@@ -562,6 +499,10 @@ class SubjectFiles:
         return [p for p in self.files.values() if p.suffix.lower() in (".jpg", ".jpeg")]
 
     @property
+    def dcms(self) -> list[Path]:
+        return [p for p in self.files.values() if p.suffix.lower() == ".dcm"]
+
+    @property
     def htmls(self) -> list[Path]:
         return [p for p in self.files.values() if p.suffix.lower() in (".html", ".htm")]
 
@@ -585,27 +526,44 @@ class CameraWatchDog(FileSystemEventHandler):
     def __init__(
         self,
         api: RetinopathyApiClient,
-        camera_db: CameraDB,
         watch_dir: Path,
         processed_dir: Path,
         report_type: str = REPORT_TYPE_COMBINED,
+        subject_folder_pattern: re.Pattern | None = None,
+        filename_eye_pattern: re.Pattern | None = None,
     ) -> None:
         self.api = api
-        self.camera_db = camera_db
         self.watch_dir = watch_dir
         self.processed_dir = processed_dir
         self.report_type = report_type
+        self._subject_folder_pattern = subject_folder_pattern or re.compile(
+            DEFAULT_SUBJECT_FOLDER_PATTERN,
+        )
+        self._filename_eye_pattern = filename_eye_pattern or re.compile(
+            DEFAULT_FILENAME_EYE_PATTERN,
+        )
         self._expected_htmls = 1 if report_type == REPORT_TYPE_COMBINED else 2
         self._subjects: dict[str, SubjectFiles] = {}
         self._lock = threading.Lock()
+
+    # -- folder matching -------------------------------------------------
+
+    def _extract_subject_id(self, folder_name: str) -> str | None:
+        """Return subject_identifier if *folder_name* matches the pattern."""
+        if folder_name == "processed":
+            return None
+        return extract_subject_identifier(folder_name, self._subject_folder_pattern)
 
     # -- startup & periodic sweep --------------------------------------
 
     def scan_all(self) -> None:
         """Scan every subject directory. Called at startup and by the sweep."""
         for entry in sorted(self.watch_dir.iterdir()):
-            if entry.is_dir() and entry.name != "processed":
-                self._scan_subject_dir(entry)
+            if not entry.is_dir():
+                continue
+            subject_id = self._extract_subject_id(entry.name)
+            if subject_id is not None:
+                self._scan_subject_dir(entry, subject_id)
 
     def run_sweep_loop(self) -> None:
         """Background loop that retries failed / late-arriving subjects."""
@@ -623,22 +581,24 @@ class CameraWatchDog(FileSystemEventHandler):
 
         if event.is_directory:
             # New subject folder appeared
-            if path.parent == self.watch_dir and path.name != "processed":
-                logger.info("New subject folder: %s", path.name)
+            if path.parent == self.watch_dir:
+                subject_id = self._extract_subject_id(path.name)
+                if subject_id is not None:
+                    logger.info("New subject folder: %s (id=%s)", path.name, subject_id)
             return
 
         # Only handle files one level below watch_dir (inside subject folders)
         if path.parent.parent != self.watch_dir:
             return
-        if path.parent.name == "processed":
+        subject_id = self._extract_subject_id(path.parent.name)
+        if subject_id is None:
             return
 
-        self._handle_file(path.parent.name, path)
+        self._handle_file(subject_id, path)
 
     # -- file handling -------------------------------------------------
 
-    def _scan_subject_dir(self, subject_dir: Path) -> None:
-        subject_id = subject_dir.name
+    def _scan_subject_dir(self, subject_dir: Path, subject_id: str) -> None:
         with self._lock:
             sf = self._subjects.setdefault(
                 subject_id,
@@ -651,7 +611,7 @@ class CameraWatchDog(FileSystemEventHandler):
 
     def _handle_file(self, subject_id: str, path: Path) -> None:
         ext = path.suffix.lower()
-        if ext not in (".jpg", ".jpeg", ".png", ".html", ".htm"):
+        if ext not in (".jpg", ".jpeg", ".png", ".dcm", ".html", ".htm"):
             logger.debug("Ignoring: %s", path.name)
             return
 
@@ -666,10 +626,11 @@ class CameraWatchDog(FileSystemEventHandler):
             )
             sf.add_file(path)
             logger.info(
-                "Detected %s/%s  (jpgs=%d, htmls=%d)",
+                "Detected %s/%s  (jpgs=%d, dcms=%d, htmls=%d)",
                 subject_id,
                 path.name,
                 len(sf.jpgs),
+                len(sf.dcms),
                 len(sf.htmls),
             )
             self._try_process(sf)
@@ -688,82 +649,27 @@ class CameraWatchDog(FileSystemEventHandler):
             name=f"upload-{sf.subject_identifier}",
         ).start()
 
-    def _process_subject(self, sf: SubjectFiles) -> None:  # noqa: C901 PLR0912 PLR0915
+    def _process_subject(self, sf: SubjectFiles) -> None:
         sid = sf.subject_identifier
         logger.info("=== Processing %s ===", sid)
 
-        # 1. Query camera DB for demographics
-        demographics = self.camera_db.get_demographics(sid)
-        if not demographics:
-            logger.error("No demographics in camera DB for %s.", sid)
-            self._mark_failed(sf)
-            return
-
-        # 2. Query camera DB for eye laterality of image files (and
-        #    report files when report_type is per_eye)
-        if self.report_type == REPORT_TYPE_COMBINED:
-            # Only images need eye mapping; reports upload as "report"
-            image_filenames = [
-                fn
-                for fn, p in sf.files.items()
-                if p.suffix.lower() in (".jpg", ".jpeg", ".png")
-            ]
-            file_map = self.camera_db.get_file_map(sid, image_filenames)
-        else:
-            file_map = self.camera_db.get_file_map(sid, list(sf.files.keys()))
-
-        unmapped_images = [
-            fn
-            for fn in sf.files
-            if fn not in file_map
-            and sf.files[fn].suffix.lower() in (".jpg", ".jpeg", ".png")
-        ]
-        if unmapped_images:
-            logger.warning(
-                "Camera DB has no eye mapping for images: %s (subject=%s). "
-                "Skipping these.",
-                unmapped_images,
-                sid,
-            )
-
-        # Build upload plan: [(api_file_type, path), ...]
+        # 1. Build upload plan from filename patterns
         upload_plan: list[tuple[str, Path]] = []
-
-        # Images — always need eye mapping
-        for filename, eye in file_map.items():
-            path = sf.files[filename]
+        for filename, path in sf.files.items():
+            eye = extract_eye_from_filename(filename, self._filename_eye_pattern)
             try:
-                api_type = determine_api_file_type(eye, path.suffix, self.report_type)
+                api_type = determine_api_file_type(
+                    eye, path.suffix, self.report_type,
+                )
             except (
                 LateralityRequiredForImagesError,
+                LateralityRequiredForDicomsError,
                 LateralityRequiredForReportsError,
                 UnhandledFileExtensionError,
             ) as exc:
                 logger.warning("Skipping %s: %s", filename, exc)
                 continue
             upload_plan.append((api_type, path))
-
-        # Reports — per_eye uses eye mapping (already in file_map above),
-        #           combined assigns "report" directly
-        if self.report_type == REPORT_TYPE_COMBINED:
-            for html_path in sf.htmls:
-                upload_plan.append(("report", html_path))  # noqa: PERF401
-        else:
-            # per_eye HTML files were included in file_map above; warn
-            # about any that had no eye mapping
-            unmapped_reports = [
-                fn
-                for fn in sf.files
-                if fn not in file_map
-                and sf.files[fn].suffix.lower() in (".html", ".htm")
-            ]
-            if unmapped_reports:
-                logger.warning(
-                    "Camera DB has no eye mapping for reports: %s (subject=%s). "
-                    "Skipping these.",
-                    unmapped_reports,
-                    sid,
-                )
 
         if not upload_plan:
             logger.error("No uploadable files for %s.", sid)
@@ -776,29 +682,26 @@ class CameraWatchDog(FileSystemEventHandler):
             [(t, p.name) for t, p in upload_plan],
         )
 
-        # 3. Ping
+        # 2. Ping
         if not self.api.ping():
             logger.error("Server unreachable. Will retry %s later.", sid)
             self._mark_failed(sf)
             return
 
-        # 4. Resolve
-        result = self.api.resolve(
-            subject_identifier=sid,
-            initials=demographics.get("initials", ""),
-            sex=demographics.get("sex", ""),
-            age=demographics.get("age"),
-        )
-        if not result:
-            logger.error("Resolve failed for %s.", sid)
+        # 3. Resolve — confirm a CameraSession exists on the server
+        resolve_result = self.api.resolve(sid)
+        if not resolve_result:
+            logger.error("No camera session on server for %s.", sid)
             self._mark_failed(sf)
             return
 
-        session_id = result["session_id"]
-        label = "reactivated" if result.get("reactivated") else "new"
-        logger.info("Session %s (%s)", session_id, label)
+        logger.info(
+            "Session %s confirmed (uploaded=%s)",
+            resolve_result["camera_session_id"],
+            resolve_result.get("uploaded", []),
+        )
 
-        # 5. Upload each file
+        # 4. Upload each file
         for api_type, path in upload_plan:
             if not path.exists():
                 logger.error("File disappeared: %s", path)
@@ -806,7 +709,7 @@ class CameraWatchDog(FileSystemEventHandler):
                 return
             size = path.stat().st_size
             logger.info("Uploading %s  %s (%d bytes) ...", api_type, path.name, size)
-            upload_result = self.api.upload_file(sid, api_type, path, session_id)
+            upload_result = self.api.upload_file(sid, api_type, path)
             if upload_result:
                 logger.info("  -> stored as %s", upload_result.get("stored_filename"))
             else:
@@ -814,7 +717,7 @@ class CameraWatchDog(FileSystemEventHandler):
                 self._mark_failed(sf)
                 return
 
-        # 6. Check status
+        # 4. Check status
         status_data = self.api.status(sid)
         if status_data:
             logger.info(
@@ -824,7 +727,7 @@ class CameraWatchDog(FileSystemEventHandler):
                 status_data.get("complete"),
             )
 
-        # 7. Move to processed
+        # 5. Move to processed
         self._move_to_processed(sf)
         logger.info("=== Done: %s ===", sid)
 
@@ -854,18 +757,14 @@ class CameraWatchDog(FileSystemEventHandler):
 
 # Keys accepted in the JSON config file.  The ``db_*`` keys map 1-to-1
 # onto ``DBColumnMap`` fields (strip the ``db_`` prefix, keep the rest).
-_CONFIG_KEYS_REQUIRED = ("watch_dir", "db_path", "api_url", "token")
-_CONFIG_KEYS_OPTIONAL = ("device_id", "site_id", "log_level", "report_type")
-_CONFIG_KEYS_DB = (
-    "db_patient_table",
-    "db_patient_subject_id",
-    "db_patient_initials",
-    "db_patient_sex",
-    "db_patient_age",
-    "db_image_table",
-    "db_image_subject_id",
-    "db_image_filename",
-    "db_image_eye",
+_CONFIG_KEYS_REQUIRED = ("watch_dir", "api_url", "token")
+_CONFIG_KEYS_OPTIONAL = (
+    "device_id",
+    "site_id",
+    "log_level",
+    "report_type",
+    "subject_folder_pattern",
+    "filename_eye_pattern",
 )
 
 
@@ -874,24 +773,15 @@ def _create_sample_config(watch_dir: Path) -> Path:
 
     Returns the path to the created file.
     """
-    col_defaults = DBColumnMap()
     sample: dict[str, str] = {
         "watch_dir": str(watch_dir),
-        "db_path": str(watch_dir / "camera.db"),
         "api_url": "https://edc.example.com",
         "device_id": "",
         "site_id": "",
         "log_level": "INFO",
         "report_type": REPORT_TYPE_COMBINED,
-        "db_patient_table": col_defaults.patient_table,
-        "db_patient_subject_id": col_defaults.patient_subject_id,
-        "db_patient_initials": col_defaults.patient_initials,
-        "db_patient_sex": col_defaults.patient_sex,
-        "db_patient_age": col_defaults.patient_age,
-        "db_image_table": col_defaults.image_table,
-        "db_image_subject_id": col_defaults.image_subject_id,
-        "db_image_filename": col_defaults.image_filename,
-        "db_image_eye": col_defaults.image_eye,
+        "subject_folder_pattern": DEFAULT_SUBJECT_FOLDER_PATTERN,
+        "filename_eye_pattern": DEFAULT_FILENAME_EYE_PATTERN,
     }
     dest = watch_dir / DEFAULT_CONFIG_FILENAME
     dest.write_text(json.dumps(sample, indent=4) + "\n", encoding="utf-8")
@@ -937,8 +827,6 @@ def main() -> None:  # noqa: PLR0915
             config = _load_config(auto_config)
 
     # ---- main parser --------------------------------------------------
-    col_defaults = DBColumnMap()
-
     parser = argparse.ArgumentParser(
         description="Watch a folder for retinopathy camera files and upload them.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -968,12 +856,6 @@ def main() -> None:  # noqa: PLR0915
         type=Path,
         default=None,
         help="Folder the camera writes subject sub-folders to.",
-    )
-    parser.add_argument(
-        "--db-path",
-        type=Path,
-        default=None,
-        help="Path to the camera's SQLite database.",
     )
     parser.add_argument(
         "--api-url",
@@ -1011,61 +893,25 @@ def main() -> None:  # noqa: PLR0915
         ),
     )
 
-    db_group = parser.add_argument_group(
-        "database column mapping",
-        "Map logical fields to the camera's actual SQLite table/column names. "
-        "All settable via --config JSON file.",
-    )
-    db_group.add_argument(
-        "--db-patient-table",
-        default=None,
-        help=f"Patient demographics table (default: {col_defaults.patient_table}).",
-    )
-    db_group.add_argument(
-        "--db-patient-subject-id",
+    parser.add_argument(
+        "--subject-folder-pattern",
         default=None,
         help=(
-            "Column for subject identifier in patient table "
-            f"(default: {col_defaults.patient_subject_id})."
+            "Regex to match subject folder names. Use a named group "
+            "'subject_identifier' to extract the ID "
+            "(e.g. '^(?P<subject_identifier>\\d{3}-\\d{2}-\\d{4}-\\d)_$'). "
+            "Folders that don't match are ignored."
         ),
     )
-    db_group.add_argument(
-        "--db-patient-initials",
-        default=None,
-        help=f"Column for initials (default: {col_defaults.patient_initials}).",
-    )
-    db_group.add_argument(
-        "--db-patient-sex",
-        default=None,
-        help=f"Column for sex (default: {col_defaults.patient_sex}).",
-    )
-    db_group.add_argument(
-        "--db-patient-age",
-        default=None,
-        help=f"Column for age (default: {col_defaults.patient_age}).",
-    )
-    db_group.add_argument(
-        "--db-image-table",
-        default=None,
-        help=f"Image file mapping table (default: {col_defaults.image_table}).",
-    )
-    db_group.add_argument(
-        "--db-image-subject-id",
+    parser.add_argument(
+        "--filename-eye-pattern",
         default=None,
         help=(
-            "Column for subject identifier in image table "
-            f"(default: {col_defaults.image_subject_id})."
+            "Regex to extract eye laterality from filenames. Use a named "
+            "group 'eye' (e.g. '(?P<eye>OD|OS)'). The extracted value is "
+            "normalized: OD/R/RIGHT/RE → right, OS/L/LEFT/LE → left. "
+            f"Default: '{DEFAULT_FILENAME_EYE_PATTERN}'."
         ),
-    )
-    db_group.add_argument(
-        "--db-image-filename",
-        default=None,
-        help=f"Column for filename (default: {col_defaults.image_filename}).",
-    )
-    db_group.add_argument(
-        "--db-image-eye",
-        default=None,
-        help=f"Column for eye laterality (default: {col_defaults.image_eye}).",
     )
 
     args = parser.parse_args()
@@ -1075,22 +921,14 @@ def main() -> None:  # noqa: PLR0915
         # Reject any other flags that were explicitly provided.
         disallowed = {
             "--config": args.config,
-            "--db-path": args.db_path,
             "--api-url": args.api_url,
             "--token": args.token,
             "--device-id": args.device_id,
             "--site-id": args.site_id,
             "--log-level": args.log_level,
             "--report-type": args.report_type,
-            "--db-patient-table": args.db_patient_table,
-            "--db-patient-subject-id": args.db_patient_subject_id,
-            "--db-patient-initials": args.db_patient_initials,
-            "--db-patient-sex": args.db_patient_sex,
-            "--db-patient-age": args.db_patient_age,
-            "--db-image-table": args.db_image_table,
-            "--db-image-subject-id": args.db_image_subject_id,
-            "--db-image-filename": args.db_image_filename,
-            "--db-image-eye": args.db_image_eye,
+            "--subject-folder-pattern": args.subject_folder_pattern,
+            "--filename-eye-pattern": args.filename_eye_pattern,
         }
         extra = [flag for flag, val in disallowed.items() if val is not None]
         if extra:
@@ -1113,7 +951,6 @@ def main() -> None:  # noqa: PLR0915
     )
 
     watch_dir_raw = _resolve(args.watch_dir, config, "watch_dir", ".")
-    db_path_raw = _resolve(args.db_path, config, "db_path")
     api_url = _resolve(args.api_url, config, "api_url")
     token = _resolve(args.token, config, "token") or os.environ.get(ENV_TOKEN, "")
 
@@ -1121,7 +958,6 @@ def main() -> None:  # noqa: PLR0915
         name
         for name, val in [
             ("--watch-dir", watch_dir_raw),
-            ("--db-path", db_path_raw),
             ("--api-url", api_url),
             ("--token", token),
         ]
@@ -1139,11 +975,6 @@ def main() -> None:  # noqa: PLR0915
         logger.error("Watch directory does not exist: %s", watch_dir)
         sys.exit(1)
 
-    db_path = Path(db_path_raw).resolve()
-    if not db_path.is_file():
-        logger.error("Camera database not found: %s", db_path)
-        sys.exit(1)
-
     device_id = _resolve(args.device_id, config, "device_id", "") or ""
     site_id = _resolve(args.site_id, config, "site_id", "") or ""
     report_type = _resolve(
@@ -1158,73 +989,37 @@ def main() -> None:  # noqa: PLR0915
             f"Must be one of: {', '.join(sorted(VALID_REPORT_TYPES))}.",
         )
 
+    subject_folder_pattern_raw = _resolve(
+        args.subject_folder_pattern,
+        config,
+        "subject_folder_pattern",
+        DEFAULT_SUBJECT_FOLDER_PATTERN,
+    )
     try:
-        column_map = DBColumnMap(
-            patient_table=_resolve(
-                args.db_patient_table,
-                config,
-                "db_patient_table",
-                col_defaults.patient_table,
-            ),
-            patient_subject_id=_resolve(
-                args.db_patient_subject_id,
-                config,
-                "db_patient_subject_id",
-                col_defaults.patient_subject_id,
-            ),
-            patient_initials=_resolve(
-                args.db_patient_initials,
-                config,
-                "db_patient_initials",
-                col_defaults.patient_initials,
-            ),
-            patient_sex=_resolve(
-                args.db_patient_sex,
-                config,
-                "db_patient_sex",
-                col_defaults.patient_sex,
-            ),
-            patient_age=_resolve(
-                args.db_patient_age,
-                config,
-                "db_patient_age",
-                col_defaults.patient_age,
-            ),
-            image_table=_resolve(
-                args.db_image_table,
-                config,
-                "db_image_table",
-                col_defaults.image_table,
-            ),
-            image_subject_id=_resolve(
-                args.db_image_subject_id,
-                config,
-                "db_image_subject_id",
-                col_defaults.image_subject_id,
-            ),
-            image_filename=_resolve(
-                args.db_image_filename,
-                config,
-                "db_image_filename",
-                col_defaults.image_filename,
-            ),
-            image_eye=_resolve(
-                args.db_image_eye,
-                config,
-                "db_image_eye",
-                col_defaults.image_eye,
-            ),
+        subject_folder_pattern = compile_subject_folder_pattern(
+            subject_folder_pattern_raw,
         )
-    except InvalidDBColumnError:
+    except InvalidSubjectFolderPatternError:
         logger.exception("")
         sys.exit(1)
 
-    logger.info("DB column mapping: %s", column_map)
+    filename_eye_pattern_raw = _resolve(
+        args.filename_eye_pattern,
+        config,
+        "filename_eye_pattern",
+        DEFAULT_FILENAME_EYE_PATTERN,
+    )
+    try:
+        filename_eye_pattern = compile_filename_eye_pattern(
+            filename_eye_pattern_raw,
+        )
+    except InvalidSubjectFolderPatternError:
+        logger.exception("")
+        sys.exit(1)
 
     processed_dir = watch_dir / "processed"
     processed_dir.mkdir(exist_ok=True)
 
-    camera_db = CameraDB(db_path, columns=column_map)
     api = RetinopathyApiClient(
         base_url=api_url,
         token=token,
@@ -1239,7 +1034,18 @@ def main() -> None:  # noqa: PLR0915
         logger.warning("Initial ping failed — continuing anyway.")
 
     logger.info("Report type: %s", report_type)
-    handler = CameraWatchDog(api, camera_db, watch_dir, processed_dir, report_type)
+    if subject_folder_pattern_raw != DEFAULT_SUBJECT_FOLDER_PATTERN:
+        logger.info("Subject folder pattern: %s", subject_folder_pattern_raw)
+    if filename_eye_pattern_raw != DEFAULT_FILENAME_EYE_PATTERN:
+        logger.info("Filename eye pattern: %s", filename_eye_pattern_raw)
+    handler = CameraWatchDog(
+        api,
+        watch_dir,
+        processed_dir,
+        report_type,
+        subject_folder_pattern=subject_folder_pattern,
+        filename_eye_pattern=filename_eye_pattern,
+    )
     handler.scan_all()
 
     sweep = threading.Thread(target=handler.run_sweep_loop, daemon=True, name="sweep")

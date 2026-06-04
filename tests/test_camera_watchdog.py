@@ -13,7 +13,6 @@ import pytest
 from fundus_camera_watchdog.main import (
     REPORT_TYPE_COMBINED,
     REPORT_TYPE_PER_EYE,
-    CameraDB,
     CameraWatchDog,
     RetinopathyApiClient,
     SubjectFiles,
@@ -57,7 +56,6 @@ def watcher_factory(watcher_dirs):
     def _make(**kwargs):
         defaults = dict(
             api=MagicMock(spec=RetinopathyApiClient),
-            camera_db=MagicMock(spec=CameraDB),
             watch_dir=tmpdir,
             processed_dir=processed,
         )
