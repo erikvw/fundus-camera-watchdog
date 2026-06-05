@@ -147,7 +147,7 @@ wheels = [
 
 [[package]]
 name = "fundus-camera-watchdog"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "requests" },
