@@ -53,11 +53,12 @@ extracted via ``filename_eye_pattern``.
 Processing is triggered once a subject folder contains the expected
 number of files:
 
-- **Combined** (default): at least **2 JPEG** and **1 HTML** file.
-- **Per-eye**: at least **2 JPEG** and **2 HTML** files.
+- **Combined** (default): at least **2 DICOM** and **1 HTML** file.
+- **Per-eye**: at least **2 DICOM** and **2 HTML** files.
 
-DICOM (``.dcm``) files are uploaded when present but are not required
-for triggering.
+By default only DICOM files are uploaded.  JPEG files are ignored
+unless ``--include-jpgs`` is set.  HTML reports can be made optional
+with ``--no-require-html``.
 
 Quick start
 -----------
@@ -164,6 +165,16 @@ Optional settings
     - **Left eye**: ``L``, ``LE``, ``OS``, ``LEFT``
     - **Right eye**: ``R``, ``RE``, ``OD``, ``RIGHT``
 
+``include_jpgs``
+    Include JPEG files in uploads and readiness checks.  By default
+    only DICOM files are uploaded.  Set to ``true`` or use
+    ``--include-jpgs`` to also upload JPEGs.  Default: ``false``.
+
+``require_html``
+    Whether HTML report files are required before triggering uploads.
+    Set to ``false`` or use ``--no-require-html`` to upload as soon as
+    enough DICOM (or JPEG) files are present.  Default: ``true``.
+
 ``log_level``
     One of ``DEBUG``, ``INFO`` (default), ``WARNING``, ``ERROR``.
 
@@ -210,10 +221,10 @@ subject:
 3. **Classify** -- extracts eye laterality from each filename using the
    configured pattern.  Maps files to API types:
 
-   - ``*.jpg`` + OD -> ``right``
-   - ``*.jpg`` + OS -> ``left``
    - ``*.dcm`` + OD -> ``right_dicom``
    - ``*.dcm`` + OS -> ``left_dicom``
+   - ``*.jpg`` + OD -> ``right`` (only with ``--include-jpgs``)
+   - ``*.jpg`` + OS -> ``left`` (only with ``--include-jpgs``)
    - ``*.html`` (combined) -> ``report``
    - ``*.html`` + OD (per_eye) -> ``right_report``
    - ``*.html`` + OS (per_eye) -> ``left_report``
@@ -223,7 +234,8 @@ subject:
 
 5. **Upload** -- sends each file to the server.  Original filenames are
    preserved.  Each upload includes a SHA-256 checksum.  Multiple files
-   per eye are supported.
+   per eye are supported.  By default only DICOM and HTML files are
+   uploaded; use ``--include-jpgs`` to also upload JPEG images.
 
 6. **Verify** -- ``GET .../status/`` confirms the session received the
    expected files.
