@@ -226,10 +226,10 @@ class TestTryProcessPerEye:
     def test_triggered_when_complete(
         self, mock_process: MagicMock, per_eye_watcher, watcher_dirs,
     ) -> None:
-        """_process_subject is called when 2 JPGs + 2 HTMLs are present."""
+        """_process_subject is called when 2 DCMs + 2 HTMLs are present."""
         tmpdir, _ = watcher_dirs
         sf = SubjectFiles(SUBJECT_IDENTIFIER, tmpdir, expected_htmls=PER_EYE_HTML_FILE_COUNT)
-        for name in ("a.jpg", "b.jpg", "c.html", "d.html"):
+        for name in ("a.dcm", "b.dcm", "c.html", "d.html"):
             sf.add_file(Path(name))
         per_eye_watcher._subjects[SUBJECT_IDENTIFIER] = sf
 
@@ -270,10 +270,10 @@ class TestTryProcessCombined:
     def test_triggered_with_one_html(
         self, mock_process: MagicMock, combined_watcher, watcher_dirs,
     ) -> None:
-        """Combined mode: 2 JPGs + 1 HTML triggers processing."""
+        """Combined mode: 2 DCMs + 1 HTML triggers processing."""
         tmpdir, _ = watcher_dirs
         sf = SubjectFiles(SUBJECT_IDENTIFIER, tmpdir, expected_htmls=COMBINED_HTML_FILE_COUNT)
-        for name in ("a.jpg", "b.jpg", "c.html"):
+        for name in ("a.dcm", "b.dcm", "c.html"):
             sf.add_file(Path(name))
         combined_watcher._subjects[SUBJECT_IDENTIFIER] = sf
 
@@ -285,10 +285,10 @@ class TestTryProcessCombined:
     def test_not_triggered_without_html(
         self, mock_process: MagicMock, combined_watcher, watcher_dirs,
     ) -> None:
-        """Combined mode: 2 JPGs + 0 HTMLs does not trigger."""
+        """Combined mode: 2 DCMs + 0 HTMLs does not trigger."""
         tmpdir, _ = watcher_dirs
         sf = SubjectFiles(SUBJECT_IDENTIFIER, tmpdir, expected_htmls=COMBINED_HTML_FILE_COUNT)
-        for name in ("a.jpg", "b.jpg"):
+        for name in ("a.dcm", "b.dcm"):
             sf.add_file(Path(name))
         combined_watcher._subjects[SUBJECT_IDENTIFIER] = sf
 
