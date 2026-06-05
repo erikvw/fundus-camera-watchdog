@@ -133,7 +133,7 @@ ENV_TOKEN = "FUNDUS_CAMERA_WATCHDOG_TOKEN"
 # ---------------------------------------------------------------------------
 # Expected file counts per subject folder
 # ---------------------------------------------------------------------------
-EXPECTED_JPGS = 2
+EXPECTED_IMAGES = 2  # JPEGs or DICOMs per subject
 
 # ---------------------------------------------------------------------------
 # API retry settings
@@ -484,10 +484,12 @@ class SubjectFiles:
         subject_identifier: str,
         directory: Path,
         expected_htmls: int = 2,
+        include_jpgs: bool = False,
     ) -> None:
         self.subject_identifier = subject_identifier
         self.directory = directory
         self.expected_htmls = expected_htmls
+        self.include_jpgs = include_jpgs
         self.files: dict[str, Path] = {}  # filename -> Path
         self.processing = False
 
@@ -508,9 +510,16 @@ class SubjectFiles:
 
     @property
     def is_ready(self) -> bool:
+        if self.include_jpgs:
+            has_enough_images = (
+                len(self.jpgs) >= EXPECTED_IMAGES
+                or len(self.dcms) >= EXPECTED_IMAGES
+            )
+        else:
+            has_enough_images = len(self.dcms) >= EXPECTED_IMAGES
         return (
             not self.processing
-            and len(self.jpgs) >= EXPECTED_JPGS
+            and has_enough_images
             and len(self.htmls) >= self.expected_htmls
         )
 
@@ -529,6 +538,8 @@ class CameraWatchDog(FileSystemEventHandler):
         watch_dir: Path,
         processed_dir: Path,
         report_type: str = REPORT_TYPE_COMBINED,
+        require_html: bool = True,
+        include_jpgs: bool = False,
         subject_folder_pattern: re.Pattern | None = None,
         filename_eye_pattern: re.Pattern | None = None,
     ) -> None:
@@ -542,7 +553,14 @@ class CameraWatchDog(FileSystemEventHandler):
         self._filename_eye_pattern = filename_eye_pattern or re.compile(
             DEFAULT_FILENAME_EYE_PATTERN,
         )
-        self._expected_htmls = 1 if report_type == REPORT_TYPE_COMBINED else 2
+        self._require_html = require_html
+        self._include_jpgs = include_jpgs
+        if not require_html:
+            self._expected_htmls = 0
+        elif report_type == REPORT_TYPE_COMBINED:
+            self._expected_htmls = 1
+        else:
+            self._expected_htmls = 2
         self._subjects: dict[str, SubjectFiles] = {}
         self._lock = threading.Lock()
 
@@ -602,7 +620,12 @@ class CameraWatchDog(FileSystemEventHandler):
         with self._lock:
             sf = self._subjects.setdefault(
                 subject_id,
-                SubjectFiles(subject_id, subject_dir, self._expected_htmls),
+                SubjectFiles(
+                    subject_id,
+                    subject_dir,
+                    self._expected_htmls,
+                    include_jpgs=self._include_jpgs,
+                ),
             )
             for p in sorted(subject_dir.iterdir()):
                 if p.is_file() and p.name not in sf.files:
@@ -622,7 +645,12 @@ class CameraWatchDog(FileSystemEventHandler):
         with self._lock:
             sf = self._subjects.setdefault(
                 subject_id,
-                SubjectFiles(subject_id, path.parent, self._expected_htmls),
+                SubjectFiles(
+                    subject_id,
+                    path.parent,
+                    self._expected_htmls,
+                    include_jpgs=self._include_jpgs,
+                ),
             )
             sf.add_file(path)
             logger.info(
@@ -656,6 +684,12 @@ class CameraWatchDog(FileSystemEventHandler):
         # 1. Build upload plan from filename patterns
         upload_plan: list[tuple[str, Path]] = []
         for filename, path in sf.files.items():
+            if not self._include_jpgs and path.suffix.lower() in (
+                ".jpg",
+                ".jpeg",
+                ".png",
+            ):
+                continue
             eye = extract_eye_from_filename(filename, self._filename_eye_pattern)
             try:
                 api_type = determine_api_file_type(
@@ -763,6 +797,8 @@ _CONFIG_KEYS_OPTIONAL = (
     "site_id",
     "log_level",
     "report_type",
+    "include_jpgs",
+    "require_html",
     "subject_folder_pattern",
     "filename_eye_pattern",
 )
@@ -894,6 +930,25 @@ def main() -> None:  # noqa: PLR0915
     )
 
     parser.add_argument(
+        "--include-jpgs",
+        action="store_true",
+        default=False,
+        help=(
+            "Include JPEG files in uploads. By default only DICOM "
+            "files (and HTML reports) are uploaded."
+        ),
+    )
+    parser.add_argument(
+        "--no-require-html",
+        action="store_true",
+        default=False,
+        help=(
+            "Do not wait for HTML report files before uploading. "
+            "When set, the watchdog triggers on JPEG files alone."
+        ),
+    )
+
+    parser.add_argument(
         "--subject-folder-pattern",
         default=None,
         help=(
@@ -927,6 +982,8 @@ def main() -> None:  # noqa: PLR0915
             "--site-id": args.site_id,
             "--log-level": args.log_level,
             "--report-type": args.report_type,
+            "--include-jpgs": args.include_jpgs or None,
+            "--no-require-html": args.no_require_html or None,
             "--subject-folder-pattern": args.subject_folder_pattern,
             "--filename-eye-pattern": args.filename_eye_pattern,
         }
@@ -989,6 +1046,14 @@ def main() -> None:  # noqa: PLR0915
             f"Must be one of: {', '.join(sorted(VALID_REPORT_TYPES))}.",
         )
 
+    # CLI flag --include-jpgs wins, then config, then default (False)
+    include_jpgs = args.include_jpgs or config.get("include_jpgs", False)
+
+    # CLI flag --no-require-html wins, then config, then default (True)
+    require_html = not args.no_require_html
+    if require_html and not config.get("require_html", True):
+        require_html = False
+
     subject_folder_pattern_raw = _resolve(
         args.subject_folder_pattern,
         config,
@@ -1034,6 +1099,10 @@ def main() -> None:  # noqa: PLR0915
         logger.warning("Initial ping failed — continuing anyway.")
 
     logger.info("Report type: %s", report_type)
+    if include_jpgs:
+        logger.info("JPEG files: included")
+    if not require_html:
+        logger.info("HTML reports: not required")
     if subject_folder_pattern_raw != DEFAULT_SUBJECT_FOLDER_PATTERN:
         logger.info("Subject folder pattern: %s", subject_folder_pattern_raw)
     if filename_eye_pattern_raw != DEFAULT_FILENAME_EYE_PATTERN:
@@ -1043,6 +1112,8 @@ def main() -> None:  # noqa: PLR0915
         watch_dir,
         processed_dir,
         report_type,
+        require_html=require_html,
+        include_jpgs=include_jpgs,
         subject_folder_pattern=subject_folder_pattern,
         filename_eye_pattern=filename_eye_pattern,
     )
