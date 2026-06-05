@@ -6,14 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import (
+from fundus_camera_watchdog.main import (
+    DEFAULT_FILENAME_EYE_PATTERN,
     REPORT_TYPE_COMBINED,
     REPORT_TYPE_PER_EYE,
+    LateralityRequiredForDicomsError,
     LateralityRequiredForImagesError,
     LateralityRequiredForReportsError,
     UnhandledFileExtensionError,
+    compile_filename_eye_pattern,
     determine_api_file_type,
+    extract_eye_from_filename,
     mime_for_file,
+    normalize_eye,
     sha256_file,
 )
 
@@ -139,6 +144,36 @@ class TestDetermineApiFileTypeCombined:
 
 
 # ---------------------------------------------------------------------------
+# determine_api_file_type — DICOM
+# ---------------------------------------------------------------------------
+
+
+class TestDetermineApiFileTypeDicom:
+    """Tests for determine_api_file_type() with DICOM files."""
+
+    def test_dcm_left(self) -> None:
+        assert determine_api_file_type("left", ".dcm") == "left_dicom"
+
+    def test_dcm_right(self) -> None:
+        assert determine_api_file_type("right", ".dcm") == "right_dicom"
+
+    def test_dcm_uppercase(self) -> None:
+        assert determine_api_file_type("left", ".DCM") == "left_dicom"
+
+    def test_dcm_no_leading_dot(self) -> None:
+        assert determine_api_file_type("right", "dcm") == "right_dicom"
+
+    def test_dcm_requires_eye(self) -> None:
+        with pytest.raises(LateralityRequiredForDicomsError):
+            determine_api_file_type(None, ".dcm")
+
+    def test_dcm_combined_still_needs_eye(self) -> None:
+        """DICOM files need eye laterality regardless of report_type."""
+        with pytest.raises(LateralityRequiredForDicomsError):
+            determine_api_file_type(None, ".dcm", REPORT_TYPE_COMBINED)
+
+
+# ---------------------------------------------------------------------------
 # mime_for_file
 # ---------------------------------------------------------------------------
 
@@ -164,8 +199,92 @@ class TestMimeForFile:
     def test_pdf(self) -> None:
         assert mime_for_file(Path("report.pdf")) == "application/pdf"
 
+    def test_dcm(self) -> None:
+        assert mime_for_file(Path("scan.dcm")) == "application/dicom"
+
     def test_unknown_extension(self) -> None:
         assert mime_for_file(Path("data.bin")) == "application/octet-stream"
 
     def test_uppercase_extension(self) -> None:
         assert mime_for_file(Path("SCAN.JPG")) == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# normalize_eye
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeEye:
+    """Tests for normalize_eye()."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("OD", "right"),
+            ("OS", "left"),
+            ("R", "right"),
+            ("L", "left"),
+            ("RIGHT", "right"),
+            ("LEFT", "left"),
+            ("RE", "right"),
+            ("LE", "left"),
+            ("od", "right"),
+            ("os", "left"),
+            (" OD ", "right"),
+        ],
+    )
+    def test_known_values(self, raw: str, expected: str) -> None:
+        assert normalize_eye(raw) == expected
+
+    def test_unknown_returns_none(self) -> None:
+        assert normalize_eye("BOTH") is None
+
+    def test_empty_returns_none(self) -> None:
+        assert normalize_eye("") is None
+
+
+# ---------------------------------------------------------------------------
+# extract_eye_from_filename
+# ---------------------------------------------------------------------------
+
+
+class TestExtractEyeFromFilename:
+    """Tests for extract_eye_from_filename()."""
+
+    def test_od_in_filename(self) -> None:
+        p = compile_filename_eye_pattern(DEFAULT_FILENAME_EYE_PATTERN)
+        result = extract_eye_from_filename(
+            "105-60-00224-7_Retina_OD_20260602_121802.dcm", p,
+        )
+        assert result == "right"
+
+    def test_os_in_filename(self) -> None:
+        p = compile_filename_eye_pattern(DEFAULT_FILENAME_EYE_PATTERN)
+        result = extract_eye_from_filename(
+            "105-60-00224-7_Retina_OS_20260602_121802.dcm", p,
+        )
+        assert result == "left"
+
+    def test_no_match_returns_none(self) -> None:
+        p = compile_filename_eye_pattern(DEFAULT_FILENAME_EYE_PATTERN)
+        assert extract_eye_from_filename("unknown_file.jpg", p) is None
+
+    def test_jpg_with_od(self) -> None:
+        p = compile_filename_eye_pattern(DEFAULT_FILENAME_EYE_PATTERN)
+        result = extract_eye_from_filename(
+            "105-60-00224-7_Retina_OD_20260602_121802.jpg", p,
+        )
+        assert result == "right"
+
+    def test_html_with_os(self) -> None:
+        p = compile_filename_eye_pattern(DEFAULT_FILENAME_EYE_PATTERN)
+        result = extract_eye_from_filename(
+            "105-60-00224-7_Report_OS_20260602.html", p,
+        )
+        assert result == "left"
+
+    def test_custom_pattern(self) -> None:
+        """Custom pattern with different group name works."""
+        p = compile_filename_eye_pattern(r"_(?P<eye>LEFT|RIGHT)_")
+        assert extract_eye_from_filename("scan_LEFT_001.jpg", p) == "left"
+        assert extract_eye_from_filename("scan_RIGHT_001.jpg", p) == "right"

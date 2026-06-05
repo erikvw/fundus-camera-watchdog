@@ -10,10 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import (
+from fundus_camera_watchdog.main import (
     REPORT_TYPE_COMBINED,
     REPORT_TYPE_PER_EYE,
-    CameraDB,
     CameraWatchDog,
     RetinopathyApiClient,
     SubjectFiles,
@@ -57,7 +56,6 @@ def watcher_factory(watcher_dirs):
     def _make(**kwargs):
         defaults = dict(
             api=MagicMock(spec=RetinopathyApiClient),
-            camera_db=MagicMock(spec=CameraDB),
             watch_dir=tmpdir,
             processed_dir=processed,
         )
@@ -129,7 +127,7 @@ class TestOnCreated:
         watcher.on_created(event)
         assert SUBJECT_IDENTIFIER not in watcher._subjects
 
-    @patch("fundus_camera_watchdog.camera_watchdog.wait_for_stable", return_value=True)
+    @patch("fundus_camera_watchdog.main.wait_for_stable", return_value=True)
     def test_file_event_registers_file(
         self, _mock_stable: MagicMock, watcher, watcher_dirs,
     ) -> None:
@@ -147,7 +145,7 @@ class TestOnCreated:
         sf = watcher._subjects[SUBJECT_IDENTIFIER]
         assert "aaa.jpg" in sf.files
 
-    @patch("fundus_camera_watchdog.camera_watchdog.wait_for_stable", return_value=True)
+    @patch("fundus_camera_watchdog.main.wait_for_stable", return_value=True)
     def test_ignores_non_image_files(
         self, _mock_stable: MagicMock, watcher, watcher_dirs,
     ) -> None:
@@ -163,7 +161,7 @@ class TestOnCreated:
 
         assert SUBJECT_IDENTIFIER not in watcher._subjects
 
-    @patch("fundus_camera_watchdog.camera_watchdog.wait_for_stable", return_value=True)
+    @patch("fundus_camera_watchdog.main.wait_for_stable", return_value=True)
     def test_ignores_processed_folder_files(
         self, _mock_stable: MagicMock, watcher, watcher_dirs,
     ) -> None:
@@ -179,7 +177,7 @@ class TestOnCreated:
 
         assert len(watcher._subjects) == 0
 
-    @patch("fundus_camera_watchdog.camera_watchdog.wait_for_stable", return_value=False)
+    @patch("fundus_camera_watchdog.main.wait_for_stable", return_value=False)
     def test_unstable_file_not_registered(
         self, _mock_stable: MagicMock, watcher, watcher_dirs,
     ) -> None:

@@ -1,6 +1,6 @@
 [project]
 name = "fundus-camera-watchdog"
-version = "0.4.0"
+version = "0.5.0"
 description = "File watchdog for fundus camera"
 readme = "README.rst"
 requires-python = '>=3.12,<3.15'
@@ -14,7 +14,7 @@ dependencies = [
 Homepage = "https://github.com/erikvw/fundus-camera-watchdog"
 
 [project.scripts]
-fundus-camera-watchdog = "fundus_camera_watchdog.camera_watchdog:main"
+fundus-camera-watchdog = "fundus_camera_watchdog.main:main"
 
 [dependency-groups]
 dev = [

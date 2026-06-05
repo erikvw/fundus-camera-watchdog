@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fundus_camera_watchdog.camera_watchdog import SubjectFiles
+from fundus_camera_watchdog.main import SubjectFiles
 
 from .constants import (
     COMBINED_HTML_FILE_COUNT,
@@ -165,3 +165,44 @@ class TestSubjectFilesCombinedReport:
         """Default expected_htmls is 2 (per_eye mode)."""
         sf = SubjectFiles("S", tmp_path)
         assert sf.expected_htmls == PER_EYE_HTML_FILE_COUNT
+
+
+class TestSubjectFilesDicom:
+    """Tests for SubjectFiles DICOM tracking."""
+
+    @pytest.fixture()
+    def sf(self, tmp_path: Path) -> SubjectFiles:
+        return SubjectFiles(SUBJECT_IDENTIFIER, tmp_path)
+
+    def test_dcms_property(self, sf: SubjectFiles, tmp_path: Path) -> None:
+        for name in ("a.jpg", "b.dcm", "c.dcm", "d.html"):
+            sf.add_file(tmp_path / name)
+        dcms = sf.dcms
+        assert len(dcms) == 2
+        names = {p.name for p in dcms}
+        assert names == {"b.dcm", "c.dcm"}
+
+    def test_dcms_empty_when_none(self, sf: SubjectFiles, tmp_path: Path) -> None:
+        sf.add_file(tmp_path / "a.jpg")
+        assert sf.dcms == []
+
+    def test_dcms_do_not_affect_readiness(
+        self,
+        sf: SubjectFiles,
+        tmp_path: Path,
+    ) -> None:
+        """DCM files are supplementary — readiness depends on JPGs and HTMLs."""
+        sf.add_file(tmp_path / "a.jpg")
+        sf.add_file(tmp_path / "b.jpg")
+        sf.add_file(tmp_path / "c.html")
+        sf.add_file(tmp_path / "d.html")
+        assert sf.is_ready is True
+        sf.add_file(tmp_path / "e.dcm")
+        sf.add_file(tmp_path / "f.dcm")
+        assert sf.is_ready is True
+
+    def test_dcms_alone_not_ready(self, sf: SubjectFiles, tmp_path: Path) -> None:
+        """DCM files alone don't satisfy readiness."""
+        sf.add_file(tmp_path / "a.dcm")
+        sf.add_file(tmp_path / "b.dcm")
+        assert sf.is_ready is False
