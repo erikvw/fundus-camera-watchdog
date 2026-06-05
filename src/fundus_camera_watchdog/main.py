@@ -105,6 +105,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -129,6 +130,7 @@ REPORT_TYPE_COMBINED = "combined"
 VALID_REPORT_TYPES = frozenset({REPORT_TYPE_PER_EYE, REPORT_TYPE_COMBINED})
 DEFAULT_CONFIG_FILENAME = "fundus_camera_watchdog.json"
 ENV_TOKEN = "FUNDUS_CAMERA_WATCHDOG_TOKEN"
+SINGLE_INSTANCE_PORT = 51742  # arbitrary local port used as a lock
 
 # ---------------------------------------------------------------------------
 # Expected file counts per subject folder
@@ -263,6 +265,24 @@ def extract_eye_from_filename(
     except IndexError:
         raw = m.group(1) if m.lastindex else m.group(0)
     return normalize_eye(raw)
+
+
+def acquire_single_instance_lock(port: int = SINGLE_INSTANCE_PORT) -> socket.socket | None:
+    """Bind a local TCP port to enforce a single running instance.
+
+    Returns the bound socket on success (keep alive for the lifetime
+    of the process), or None if another instance already holds the lock.
+    The OS releases the port automatically when the process exits.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        sock.close()
+        return None
+    sock.listen(1)
+    return sock
 
 
 def sha256_file(path: Path) -> str:
@@ -1091,6 +1111,22 @@ def main() -> None:  # noqa: PLR0915
         device_id=device_id,
         site_id=site_id,
     )
+
+    logger.info(
+        "fundus-camera-watchdog %s",
+        importlib.metadata.version("fundus-camera-watchdog"),
+    )
+
+    # Enforce single instance. Keep _lock_sock alive for the lifetime
+    # of the process — the OS releases the port automatically on exit.
+    _lock_sock = acquire_single_instance_lock()  # noqa: F841
+    if _lock_sock is None:
+        logger.error(
+            "Another instance of fundus-camera-watchdog is already running "
+            "(local port %d is in use). Exiting.",
+            SINGLE_INSTANCE_PORT,
+        )
+        sys.exit(1)
 
     logger.info("Pinging %s ...", api_url)
     if api.ping():

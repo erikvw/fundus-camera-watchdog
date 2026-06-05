@@ -14,6 +14,7 @@ from fundus_camera_watchdog.main import (
     LateralityRequiredForImagesError,
     LateralityRequiredForReportsError,
     UnhandledFileExtensionError,
+    acquire_single_instance_lock,
     compile_filename_eye_pattern,
     determine_api_file_type,
     extract_eye_from_filename,
@@ -288,3 +289,38 @@ class TestExtractEyeFromFilename:
         p = compile_filename_eye_pattern(r"_(?P<eye>LEFT|RIGHT)_")
         assert extract_eye_from_filename("scan_LEFT_001.jpg", p) == "left"
         assert extract_eye_from_filename("scan_RIGHT_001.jpg", p) == "right"
+
+
+# ---------------------------------------------------------------------------
+# acquire_single_instance_lock
+# ---------------------------------------------------------------------------
+
+
+class TestAcquireSingleInstanceLock:
+    """Tests for acquire_single_instance_lock()."""
+
+    def test_first_acquisition_succeeds(self) -> None:
+        """First call binds the port and returns a socket."""
+        # Use a high unused port for the test
+        sock = acquire_single_instance_lock(port=51743)
+        assert sock is not None
+        sock.close()
+
+    def test_second_acquisition_fails(self) -> None:
+        """Second call to bind the same port returns None."""
+        first = acquire_single_instance_lock(port=51744)
+        assert first is not None
+        try:
+            second = acquire_single_instance_lock(port=51744)
+            assert second is None
+        finally:
+            first.close()
+
+    def test_release_allows_reacquisition(self) -> None:
+        """After closing the first socket, the port can be re-acquired."""
+        first = acquire_single_instance_lock(port=51745)
+        assert first is not None
+        first.close()
+        second = acquire_single_instance_lock(port=51745)
+        assert second is not None
+        second.close()
