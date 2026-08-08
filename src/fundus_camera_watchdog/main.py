@@ -160,9 +160,7 @@ EYE_RIGHT_VALUES = frozenset({"R", "OD", "RIGHT", "RE"})
 
 class InvalidSubjectFolderPatternError(Exception):
     def __init__(self, pattern: str, reason: str) -> None:
-        super().__init__(
-            f"Invalid subject_folder_pattern {pattern!r}: {reason}"
-        )
+        super().__init__(f"Invalid subject_folder_pattern {pattern!r}: {reason}")
 
 
 class LateralityRequiredForImagesError(Exception):
@@ -388,7 +386,7 @@ class RetinopathyApiClient:
         return r is not None and r.status_code == STATUS_CODE_OK
 
     def resolve(self, subject_identifier: str) -> dict | None:
-        """Confirm a CameraSession exists for *subject_identifier*.
+        """Confirm a EyeExamRegister instance exists for *subject_identifier*.
 
         Returns the response dict on success, or None on failure.
         """
@@ -532,8 +530,7 @@ class SubjectFiles:
     def is_ready(self) -> bool:
         if self.include_jpgs:
             has_enough_images = (
-                len(self.jpgs) >= EXPECTED_IMAGES
-                or len(self.dcms) >= EXPECTED_IMAGES
+                len(self.jpgs) >= EXPECTED_IMAGES or len(self.dcms) >= EXPECTED_IMAGES
             )
         else:
             has_enough_images = len(self.dcms) >= EXPECTED_IMAGES
@@ -713,7 +710,9 @@ class CameraWatchDog(FileSystemEventHandler):
             eye = extract_eye_from_filename(filename, self._filename_eye_pattern)
             try:
                 api_type = determine_api_file_type(
-                    eye, path.suffix, self.report_type,
+                    eye,
+                    path.suffix,
+                    self.report_type,
                 )
             except (
                 LateralityRequiredForImagesError,
@@ -742,10 +741,10 @@ class CameraWatchDog(FileSystemEventHandler):
             self._mark_failed(sf)
             return
 
-        # 3. Resolve — confirm a CameraSession exists on the server
+        # 3. Resolve — confirm a EyeExamRegister instance exists on the server
         resolve_result = self.api.resolve(sid)
         if not resolve_result:
-            logger.error("No camera session on server for %s.", sid)
+            logger.error("No entry in the Eye Exam Register on server for %s.", sid)
             self._mark_failed(sf)
             return
 
@@ -1010,8 +1009,7 @@ def main() -> None:  # noqa: PLR0915
         extra = [flag for flag, val in disallowed.items() if val is not None]
         if extra:
             parser.error(
-                f"--create-config only accepts --watch-dir. "
-                f"Remove: {', '.join(extra)}."
+                f"--create-config only accepts --watch-dir. Remove: {', '.join(extra)}."
             )
         watch_dir = Path(args.watch_dir or ".").resolve()
         watch_dir.mkdir(parents=True, exist_ok=True)
