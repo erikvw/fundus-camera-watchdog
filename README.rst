@@ -9,7 +9,7 @@ workstation and uploads files to a clinicedc project using the
 
 It runs on the camera's workstation.  When the camera finishes an
 examination and writes files to disk, the watchdog detects them,
-confirms the subject has a camera session on the server, uploads each
+confirms the subject has an entry in the Eye Exam Register on the server, uploads each
 file, and moves the completed folder to an archive.
 
 Prerequisites
