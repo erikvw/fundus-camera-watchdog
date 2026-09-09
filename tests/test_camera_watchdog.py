@@ -14,6 +14,7 @@ from fundus_camera_watchdog.main import (
     REPORT_TYPE_COMBINED,
     REPORT_TYPE_PER_EYE,
     CameraWatchDog,
+    NoEligibleRegisterError,
     RetinopathyApiClient,
     SubjectFiles,
 )
@@ -367,6 +368,74 @@ class TestMoveToProcessed:
         watcher._move_to_processed(sf)
 
         assert SUBJECT_IDENTIFIER not in watcher._subjects
+
+
+# ---------------------------------------------------------------------------
+# _process_subject: terminal rejection
+# ---------------------------------------------------------------------------
+
+
+class TestProcessSubjectNoEligibleRegister:
+    """A register the server will never accept is set aside, not retried."""
+
+    def test_moves_to_rejected_without_uploading(self, watcher, watcher_dirs) -> None:
+        tmpdir, _ = watcher_dirs
+        subdir = tmpdir / SUBJECT_IDENTIFIER
+        subdir.mkdir()
+        for name in ("eye_OD.dcm", "eye_OS.dcm"):
+            (subdir / name).write_bytes(b"x")
+
+        sf = SubjectFiles(SUBJECT_IDENTIFIER, subdir, expected_htmls=0)
+        for path in sorted(subdir.iterdir()):
+            sf.add_file(path)
+        watcher._subjects[SUBJECT_IDENTIFIER] = sf
+
+        watcher.api.ping.return_value = True
+        watcher.api.resolve.side_effect = NoEligibleRegisterError(SUBJECT_IDENTIFIER)
+
+        watcher._process_subject(sf)
+
+        watcher.api.upload_file.assert_not_called()
+        assert not subdir.exists()
+        assert len(list((tmpdir / "rejected").iterdir())) == 1
+        assert SUBJECT_IDENTIFIER not in watcher._subjects
+
+
+# ---------------------------------------------------------------------------
+# _move_to_rejected
+# ---------------------------------------------------------------------------
+
+
+class TestMoveToRejected:
+    """Tests for CameraWatchDog._move_to_rejected()."""
+
+    def test_moves_directory(self, watcher, watcher_dirs) -> None:
+        """Subject directory is moved into rejected/, which is created on demand."""
+        tmpdir, _ = watcher_dirs
+        subdir = tmpdir / SUBJECT_IDENTIFIER
+        subdir.mkdir()
+        (subdir / "a.dcm").write_bytes(b"x")
+
+        sf = SubjectFiles(SUBJECT_IDENTIFIER, subdir)
+        watcher._subjects[SUBJECT_IDENTIFIER] = sf
+
+        watcher._move_to_rejected(sf)
+
+        assert not subdir.exists()
+        moved = list((tmpdir / "rejected").iterdir())
+        assert len(moved) == 1
+        assert moved[0].name.startswith("105-10-0001-2_")
+        assert (moved[0] / "a.dcm").exists()
+        assert SUBJECT_IDENTIFIER not in watcher._subjects
+
+    def test_scan_skips_rejected_dir(self, watcher, watcher_dirs) -> None:
+        """The 'rejected' subfolder is not treated as a subject."""
+        tmpdir, _ = watcher_dirs
+        rejected = tmpdir / "rejected"
+        rejected.mkdir()
+        (rejected / "old.dcm").write_bytes(b"x")
+        watcher.scan_all()
+        assert "rejected" not in watcher._subjects
 
 
 # ---------------------------------------------------------------------------
