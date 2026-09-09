@@ -741,7 +741,7 @@ class CameraWatchDog(FileSystemEventHandler):
             self._mark_failed(sf)
             return
 
-        # 3. Resolve — confirm a EyeExamRegister instance exists on the server
+        # 3. Resolve — confirm an EyeExamRegister instance exists on the server
         resolve_result = self.api.resolve(sid)
         if not resolve_result:
             logger.error("No entry in the Eye Exam Register on server for %s.", sid)
@@ -750,7 +750,7 @@ class CameraWatchDog(FileSystemEventHandler):
 
         logger.info(
             "Session %s confirmed (uploaded=%s)",
-            resolve_result["camera_session_id"],
+            resolve_result.get("eye_exam_register_id"),
             resolve_result.get("uploaded", []),
         )
 

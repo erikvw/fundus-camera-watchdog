@@ -55,7 +55,7 @@ class TestStatus:
         MockHandler.responses["/api/retinopathy/105-10-0001-2/status/"] = (
             200,
             {
-                "session_id": "abc-123",
+                "eye_exam_register_id": "abc-123",
                 "uploaded": ["left", "right"],
                 "missing": ["left_report", "right_report"],
                 "complete": False,

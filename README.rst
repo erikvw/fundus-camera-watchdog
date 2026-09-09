@@ -229,8 +229,8 @@ subject:
    - ``*.html`` + OD (per_eye) -> ``right_report``
    - ``*.html`` + OS (per_eye) -> ``left_report``
 
-4. **Resolve** -- ``POST /api/retinopathy/resolve/`` confirms a
-   CameraSession exists on the server for this subject.
+4. **Resolve** -- ``POST /api/retinopathy/resolve/`` confirms an
+   EyeExamRegister exists on the server for this subject.
 
 5. **Upload** -- sends each file to the server.  Original filenames are
    preserved.  Each upload includes a SHA-256 checksum.  Multiple files
