@@ -5,7 +5,12 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fundus_camera_watchdog.main import RetinopathyApiClient
+import pytest
+
+from fundus_camera_watchdog.main import (
+    NoEligibleRegisterError,
+    RetinopathyApiClient,
+)
 
 from .conftest import MockHandler
 from .constants import SUBJECT_IDENTIFIER
@@ -55,7 +60,7 @@ class TestStatus:
         MockHandler.responses["/api/retinopathy/105-10-0001-2/status/"] = (
             200,
             {
-                "session_id": "abc-123",
+                "eye_exam_register_id": "abc-123",
                 "uploaded": ["left", "right"],
                 "missing": ["left_report", "right_report"],
                 "complete": False,
@@ -73,6 +78,65 @@ class TestStatus:
         )
         result = api_client.status(SUBJECT_IDENTIFIER)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Resolve
+# ---------------------------------------------------------------------------
+
+
+class TestResolve:
+    """Tests for RetinopathyApiClient.resolve()."""
+
+    def test_resolve_success(self, api_client: RetinopathyApiClient) -> None:
+        MockHandler.responses["/api/retinopathy/resolve/"] = (
+            200,
+            {
+                "subject_identifier": SUBJECT_IDENTIFIER,
+                "eye_exam_register_id": "abc-123",
+                "uploaded": [],
+            },
+        )
+        result = api_client.resolve(SUBJECT_IDENTIFIER)
+        assert result is not None
+        assert result["eye_exam_register_id"] == "abc-123"
+
+    def test_resolve_no_session_returns_none(
+        self,
+        api_client: RetinopathyApiClient,
+    ) -> None:
+        """A subject with no register at all is a retryable failure."""
+        MockHandler.responses["/api/retinopathy/resolve/"] = (
+            404,
+            {"code": "no_session", "error": "No entry found."},
+        )
+        assert api_client.resolve(SUBJECT_IDENTIFIER) is None
+
+    def test_resolve_no_eligible_session_raises(
+        self,
+        api_client: RetinopathyApiClient,
+    ) -> None:
+        """Every register is complete or contraindicated, so retrying is futile."""
+        MockHandler.responses["/api/retinopathy/resolve/"] = (
+            400,
+            {
+                "code": "no_eligible_session",
+                "error": "All sessions for this subject are complete.",
+            },
+        )
+        with pytest.raises(NoEligibleRegisterError, match=SUBJECT_IDENTIFIER):
+            api_client.resolve(SUBJECT_IDENTIFIER)
+
+    def test_resolve_other_error_returns_none(
+        self,
+        api_client: RetinopathyApiClient,
+    ) -> None:
+        """An unrecognised error code stays retryable."""
+        MockHandler.responses["/api/retinopathy/resolve/"] = (
+            500,
+            {"error": "boom"},
+        )
+        assert api_client.resolve(SUBJECT_IDENTIFIER) is None
 
 
 # ---------------------------------------------------------------------------

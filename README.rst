@@ -229,8 +229,12 @@ subject:
    - ``*.html`` + OD (per_eye) -> ``right_report``
    - ``*.html`` + OS (per_eye) -> ``left_report``
 
-4. **Resolve** -- ``POST /api/retinopathy/resolve/`` confirms a
-   CameraSession exists on the server for this subject.
+4. **Resolve** -- ``POST /api/retinopathy/resolve/`` confirms an
+   EyeExamRegister exists on the server for this subject.  If the
+   server answers ``no_eligible_session``, every register for the
+   subject is complete or contraindicated and no upload can succeed
+   until someone creates a new one in the EDC, so the subject folder
+   is set aside (see **Rejected subjects** below) rather than retried.
 
 5. **Upload** -- sends each file to the server.  Original filenames are
    preserved.  Each upload includes a SHA-256 checksum.  Multiple files
@@ -251,6 +255,14 @@ Error handling
 
 - **Failed subjects** -- if any step fails, the subject is left in
   place and retried on the next 60-second sweep.
+
+- **Rejected subjects** -- if the server reports that no register can
+  accept the upload (``no_eligible_session``), retrying cannot help.
+  The subject folder is moved to
+  ``<watch-dir>/rejected/<subject_id>_<timestamp>/`` and an error is
+  logged naming the subject.  Create a new entry in the Eye Exam
+  Register in the EDC, then move the folder back under the watch
+  directory to upload it.
 
 - **Startup scan** -- on (re)start the watchdog scans all existing
   subject folders, picking up where it left off.

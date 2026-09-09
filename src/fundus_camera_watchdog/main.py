@@ -122,6 +122,12 @@ logger = logging.getLogger("watch_camera")
 STATUS_CODE_OK = 200
 STATUS_CODE_CREATED = 201
 
+# Error codes returned by the edc-retinopathy API in the ``code`` field.
+# ``no_eligible_session`` is terminal: every entry in the Eye Exam Register
+# for the subject is complete or contraindicated, so retrying cannot help
+# until someone adds a new entry in the EDC.
+CODE_NO_ELIGIBLE_SESSION = "no_eligible_session"
+
 # ---------------------------------------------------------------------------
 # Report type: per-eye (left_report + right_report) or combined (single report)
 # ---------------------------------------------------------------------------
@@ -181,6 +187,18 @@ class LateralityRequiredForReportsError(Exception):
 class UnhandledFileExtensionError(Exception):
     def __init__(self, extension: str) -> None:
         super().__init__(f"Unexpected extension. Got {extension}.")
+
+
+class NoEligibleRegisterError(Exception):
+    """Raised when no entry in the Eye Exam Register can accept an upload."""
+
+    def __init__(self, subject_identifier: str, detail: str = "") -> None:
+        msg = (
+            f"No eligible entry in the Eye Exam Register for {subject_identifier}. "
+            "Every entry is complete or contraindicated. A new entry must be "
+            "created in the EDC before these files can be uploaded."
+        )
+        super().__init__(f"{msg} Server said: {detail}" if detail else msg)
 
 
 DEFAULT_SUBJECT_FOLDER_PATTERN = r"^(?P<subject_identifier>.+)$"
@@ -360,6 +378,17 @@ def mime_for_file(path: Path) -> str:
     }.get(ext, "application/octet-stream")
 
 
+def response_code(response: requests.Response) -> str:
+    """Return the ``code`` field of a JSON error body, or "" if absent."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("code", ""))
+
+
 # ===================================================================
 # API client
 # ===================================================================
@@ -386,9 +415,16 @@ class RetinopathyApiClient:
         return r is not None and r.status_code == STATUS_CODE_OK
 
     def resolve(self, subject_identifier: str) -> dict | None:
-        """Confirm a EyeExamRegister instance exists for *subject_identifier*.
+        """Confirm an EyeExamRegister instance exists for *subject_identifier*.
 
-        Returns the response dict on success, or None on failure.
+        Returns the response dict on success, or None on a transient
+        failure worth retrying.
+
+        Raises:
+            NoEligibleRegisterError: the server holds entries for this
+                subject but none can accept an upload. Retrying cannot
+                help, so the caller should stop rather than sweep the
+                folder again.
         """
         payload: dict = {"subject_identifier": subject_identifier}
         if self.device_id:
@@ -402,6 +438,8 @@ class RetinopathyApiClient:
         if r is not None and r.status_code == STATUS_CODE_OK:
             return r.json()
         if r is not None:
+            if response_code(r) == CODE_NO_ELIGIBLE_SESSION:
+                raise NoEligibleRegisterError(subject_identifier, r.text[:300])
             logger.error(
                 "resolve %s: %d %s",
                 subject_identifier,
@@ -559,10 +597,13 @@ class CameraWatchDog(FileSystemEventHandler):
         include_jpgs: bool = False,
         subject_folder_pattern: re.Pattern | None = None,
         filename_eye_pattern: re.Pattern | None = None,
+        rejected_dir: Path | None = None,
     ) -> None:
         self.api = api
         self.watch_dir = watch_dir
         self.processed_dir = processed_dir
+        self.rejected_dir = rejected_dir or watch_dir / "rejected"
+        self._archive_dir_names = {self.processed_dir.name, self.rejected_dir.name}
         self.report_type = report_type
         self._subject_folder_pattern = subject_folder_pattern or re.compile(
             DEFAULT_SUBJECT_FOLDER_PATTERN,
@@ -585,7 +626,7 @@ class CameraWatchDog(FileSystemEventHandler):
 
     def _extract_subject_id(self, folder_name: str) -> str | None:
         """Return subject_identifier if *folder_name* matches the pattern."""
-        if folder_name == "processed":
+        if folder_name in self._archive_dir_names:
             return None
         return extract_subject_identifier(folder_name, self._subject_folder_pattern)
 
@@ -741,8 +782,16 @@ class CameraWatchDog(FileSystemEventHandler):
             self._mark_failed(sf)
             return
 
-        # 3. Resolve — confirm a EyeExamRegister instance exists on the server
-        resolve_result = self.api.resolve(sid)
+        # 3. Resolve — confirm an EyeExamRegister instance exists on the server
+        try:
+            resolve_result = self.api.resolve(sid)
+        except NoEligibleRegisterError as exc:
+            # Terminal: sweeping this folder again would loop forever.
+            # A traceback would be noise: this is an expected condition,
+            # and the message already says what a human has to do.
+            logger.error("%s Setting aside as rejected.", exc)  # noqa: TRY400
+            self._move_to_rejected(sf)
+            return
         if not resolve_result:
             logger.error("No entry in the Eye Exam Register on server for %s.", sid)
             self._mark_failed(sf)
@@ -750,7 +799,7 @@ class CameraWatchDog(FileSystemEventHandler):
 
         logger.info(
             "Session %s confirmed (uploaded=%s)",
-            resolve_result["camera_session_id"],
+            resolve_result.get("eye_exam_register_id"),
             resolve_result.get("uploaded", []),
         )
 
@@ -787,14 +836,22 @@ class CameraWatchDog(FileSystemEventHandler):
     # -- post-processing -----------------------------------------------
 
     def _move_to_processed(self, sf: SubjectFiles) -> None:
+        self._archive(sf, self.processed_dir)
+
+    def _move_to_rejected(self, sf: SubjectFiles) -> None:
+        """Set aside a subject the server will never accept as it stands."""
+        self._archive(sf, self.rejected_dir)
+
+    def _archive(self, sf: SubjectFiles, dest_dir: Path) -> None:
         ts = datetime.now(tz=ZoneInfo("UTC")).strftime("%Y%m%d_%H%M%S")
-        dest = self.processed_dir / f"{sf.subject_identifier}_{ts}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{sf.subject_identifier}_{ts}"
         try:
             shutil.move(str(sf.directory), str(dest))
         except OSError:
             logger.exception("Failed to move %s", sf.directory)
         else:
-            logger.info("Moved %s -> processed/", sf.directory.name)
+            logger.info("Moved %s -> %s/", sf.directory.name, dest_dir.name)
 
         with self._lock:
             self._subjects.pop(sf.subject_identifier, None)
@@ -1102,6 +1159,7 @@ def main() -> None:  # noqa: PLR0915
 
     processed_dir = watch_dir / "processed"
     processed_dir.mkdir(exist_ok=True)
+    rejected_dir = watch_dir / "rejected"
 
     api = RetinopathyApiClient(
         base_url=api_url,
@@ -1150,6 +1208,7 @@ def main() -> None:  # noqa: PLR0915
         include_jpgs=include_jpgs,
         subject_folder_pattern=subject_folder_pattern,
         filename_eye_pattern=filename_eye_pattern,
+        rejected_dir=rejected_dir,
     )
     handler.scan_all()
 
